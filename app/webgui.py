@@ -13,12 +13,12 @@ import html
 import json
 import os
 import random
+import secrets
 import shutil
 import string
 import subprocess
 import sys
 import traceback
-import secrets
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -103,6 +103,18 @@ class SessionAuthBackend(AuthenticationBackend):
             is_admin = True
 
         return AuthCredentials(credentials), ExtendedUser(username, is_admin)
+    
+class ProxySSOMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        if "X-User" in request.headers:
+            # Establish session from proxy (idempotent)
+            if not request.session.get("user"):
+                request.session.update({"user": request.headers["X-User"]})
+                # Optional: admin mapping via group header, e.g. X-Groups
+                groups = request.headers.get("X-Groups", "")
+                if "mercure-admins" in groups.split(";"):
+                    request.session.update({"is_admin": "Jawohl"})
+        return await call_next(request)
 
 
 webgui_config = None
@@ -948,6 +960,7 @@ def create_app() -> Starlette:
     # Don't check the existence of the static folder because the wrong parent folder is used if the
     # source code is parsed by sphinx. This would raise an exception and lead to failure of sphinx.
     app.mount("/static", StaticFiles(directory="webinterface/statics", check_dir=False), name="static")
+    app.add_middleware(ProxySSOMiddleware)
     app.add_middleware(AuthenticationMiddleware, backend=SessionAuthBackend())
     app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY, session_cookie="mercure_session")
     app.add_middleware(CSPMiddleware)
