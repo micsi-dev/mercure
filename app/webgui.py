@@ -110,6 +110,7 @@ class ProxySSOMiddleware(BaseHTTPMiddleware):
             # Establish session from proxy (idempotent)
             if not request.session.get("user"):
                 request.session.update({"user": request.headers["X-User"]})
+                request.session["sso_user"] = "True"
                 # Optional: admin mapping via group header, e.g. X-Groups
                 groups = request.headers.get("X-Groups", "")
                 if "mercure-admins" in groups.split(";"):
@@ -684,10 +685,23 @@ async def login_post(request) -> Response:
         return templates.TemplateResponse(template, context)
 
 
+# @router.get("/logout")
+# async def logout(request):
+#     """Logouts the users by clearing the session cookie."""
+#     monitor.send_webgui_event(monitor.w_events.LOGOUT, request.user.display_name, "")
+#     request.session.clear()
+#     return RedirectResponse(url="/login")
+
 @router.get("/logout")
 async def logout(request):
     """Logouts the users by clearing the session cookie."""
     monitor.send_webgui_event(monitor.w_events.LOGOUT, request.user.display_name, "")
+
+    # Check if this is an SSO user and redirect to OAuth logout
+    if request.session.get("sso_user") == "True":
+        request.session.clear()
+        return RedirectResponse(url="/oauth2/sign_out")
+
     request.session.clear()
     return RedirectResponse(url="/login")
 
