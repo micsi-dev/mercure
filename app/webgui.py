@@ -106,16 +106,53 @@ class SessionAuthBackend(AuthenticationBackend):
     
 class ProxySSOMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
-        if "X-User" in request.headers:
-            # Establish session from proxy (idempotent)
-            if not request.session.get("user"):
-                request.session.update({"user": request.headers["X-User"]})
-                request.session["sso_user"] = "True"
-                # Optional: admin mapping via group header, e.g. X-Groups
-                groups = request.headers.get("X-Groups", "")
-                if "mercure-admins" in groups.split(";"):
-                    request.session.update({"is_admin": "Jawohl"})
-        return await call_next(request)
+        # Check for oauth2-proxy headers for SSO authentication
+        forwarded_user = request.headers.get("x-forwarded-user")
+        forwarded_groups = request.headers.get("x-forwarded-groups", "")
+
+        if forwarded_user:
+            # Look up user by email in the users list
+            try:
+                users.read_users()
+                username = None
+
+                # Search for user with matching email
+                for user_key, user_data in users.users_list.items():
+                    if user_data.get("email", "").lower() == forwarded_user.lower():
+                        username = user_key
+                        break
+
+                if username:
+                    # Auto-provision session for SSO users
+                    request.session["user"] = username
+                    request.session["sso_user"] = "True"
+
+                    # Check if user is in admin groups
+                    admin_groups = os.getenv("OAUTH2_ADMIN_GROUPS", "mercure-admins").split(",")
+                    user_groups = [group.strip() for group in forwarded_groups.split(",")]
+
+                    # if any(admin_group.strip() in user_groups for admin_group in admin_groups):
+
+                    # TODO: Check if user is in admin groups
+                    request.session["is_admin"] = "Jawohl"
+
+                    # else:
+                    #     # Clear admin status if not in admin groups
+                    #     request.session.pop("is_admin", None)
+                else:
+                    # Email not found in users list, clear session
+                    request.session.pop("user", None)
+                    request.session.pop("sso_user", None)
+                    request.session.pop("is_admin", None)
+
+            except Exception:
+                # Error reading users, clear session
+                request.session.pop("user", None)
+                request.session.pop("sso_user", None)
+                request.session.pop("is_admin", None)
+
+        response = await call_next(request)
+        return response
 
 
 webgui_config = None
@@ -485,6 +522,10 @@ async def login(request) -> Response:
         config.read_config()
     except Exception:
         return PlainTextResponse("Error reading configuration file.")
+
+    if request.session.get("user") is not None:
+        return RedirectResponse(url="/", status_code=303)
+
     request.session.clear()
     template = "login.html"
     context = {
