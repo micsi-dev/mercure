@@ -104,11 +104,12 @@ class SessionAuthBackend(AuthenticationBackend):
             is_admin = True
 
         return AuthCredentials(credentials), ExtendedUser(username, is_admin)
-    
+
+
 class ProxySSOMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         # Check for oauth2-proxy headers for SSO authentication
-        forwarded_user = request.headers.get("x-forwarded-user")
+        forwarded_user = request.headers.get("x-forwarded-email", "")
         forwarded_groups = request.headers.get("x-forwarded-groups", "")
 
         if forwarded_user:
@@ -162,7 +163,7 @@ class ProxySSOMiddleware(BaseHTTPMiddleware):
                         # Create new user
                         users.users_list[new_username] = {
                             "email": forwarded_user.lower(),
-                            "password": str(uuid.uuid4().hex),  # set to a random password just in case
+                            "password": users.hash_password(str(uuid.uuid4().hex)),  # set to a random password just in case
                             "is_admin": "True" if is_in_admins_group else "False",
                             "change_password": "False"  # SSO users don't need to change password
                         }
