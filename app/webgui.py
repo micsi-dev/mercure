@@ -58,6 +58,7 @@ from webinterface.dashboards.query.jobs import QueryPipeline
 
 import docker
 import nomad
+import uuid
 
 router = decoRouter()
 
@@ -149,7 +150,7 @@ class ProxySSOMiddleware(BaseHTTPMiddleware):
                     # Auto-provision new user if they're in the authorized users group
                     try:
                         # Generate username from email (part before @)
-                        new_username = forwarded_user.split("@")[0].lower()
+                        new_username = forwarded_user.split("@")[0].lower().replace('.', '_')
 
                         # Ensure username is unique
                         original_username = new_username
@@ -161,7 +162,7 @@ class ProxySSOMiddleware(BaseHTTPMiddleware):
                         # Create new user
                         users.users_list[new_username] = {
                             "email": forwarded_user.lower(),
-                            "password": "",  # No password needed for SSO users
+                            "password": str(uuid.uuid4().hex),  # set to a random password just in case
                             "is_admin": "True" if is_in_admins_group else "False",
                             "change_password": "False"  # SSO users don't need to change password
                         }
