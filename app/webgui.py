@@ -58,6 +58,7 @@ from webinterface.dashboards.query.jobs import QueryPipeline
 
 import docker
 import nomad
+import uuid
 
 router = decoRouter()
 
@@ -103,19 +104,105 @@ class SessionAuthBackend(AuthenticationBackend):
             is_admin = True
 
         return AuthCredentials(credentials), ExtendedUser(username, is_admin)
-    
+
+
 class ProxySSOMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
-        if "X-User" in request.headers:
-            # Establish session from proxy (idempotent)
-            if not request.session.get("user"):
-                request.session.update({"user": request.headers["X-User"]})
-                request.session["sso_user"] = "True"
-                # Optional: admin mapping via group header, e.g. X-Groups
-                groups = request.headers.get("X-Groups", "")
-                if "mercure-admins" in groups.split(";"):
-                    request.session.update({"is_admin": "Jawohl"})
-        return await call_next(request)
+        # Check for oauth2-proxy headers for SSO authentication
+        forwarded_user = request.headers.get("x-forwarded-email", "")
+        forwarded_groups = request.headers.get("x-forwarded-groups", "")
+
+        if forwarded_user:
+            # Look up user by email in the users list
+            try:
+                users.read_users()
+                username = None
+
+                # Search for user with matching email
+                for user_key, user_data in users.users_list.items():
+                    if user_data.get("email", "").lower() == forwarded_user.lower():
+                        username = user_key
+                        break
+
+                # Parse user groups from header
+                user_groups = [group.strip() for group in forwarded_groups.split(",") if group.strip()]
+
+                # Get AD group UUIDs from environment
+                ad_users_group = os.getenv("AD_MERCURE_USERS_GROUP", "")
+                ad_admins_group = os.getenv("AD_MERCURE_ADMINS_GROUP", "")
+
+                # Check if user is in authorized groups
+                is_in_users_group = ad_users_group and ad_users_group in user_groups
+                is_in_admins_group = ad_admins_group and ad_admins_group in user_groups
+
+                if username:
+                    # Existing user - auto-provision session for SSO users
+                    request.session["user"] = username
+                    request.session["sso_user"] = "True"
+
+                    # Set admin status based on AD admin group membership
+                    if is_in_admins_group:
+                        request.session["is_admin"] = "Jawohl"
+                    else:
+                        # Clear admin status if not in admin groups
+                        request.session.pop("is_admin", None)
+
+                elif is_in_users_group:
+                    # Auto-provision new user if they're in the authorized users group
+                    try:
+                        # Generate username from email (part before @)
+                        new_username = forwarded_user.split("@")[0].lower().replace('.', '_')
+
+                        # Ensure username is unique
+                        original_username = new_username
+                        counter = 1
+                        while new_username in users.users_list:
+                            new_username = f"{original_username}_{counter}"
+                            counter += 1
+
+                        # Create new user
+                        users.users_list[new_username] = {
+                            "email": forwarded_user.lower(),
+                            "password": users.hash_password(str(uuid.uuid4().hex)),  # set to a random password just in case
+                            "is_admin": "True" if is_in_admins_group else "False",
+                            "change_password": "False"  # SSO users don't need to change password
+                        }
+
+                        # Save the updated users list
+                        users.save_users()
+
+                        # Auto-provision session for the new SSO user
+                        request.session["user"] = new_username
+                        request.session["sso_user"] = "True"
+
+                        if is_in_admins_group:
+                            request.session["is_admin"] = "Jawohl"
+                        else:
+                            request.session.pop("is_admin", None)
+
+                        logger.info(f"Auto-provisioned SSO user: {new_username} (email: {forwarded_user}, admin: {is_in_admins_group})")
+
+                    except Exception as e:
+                        logger.error(f"Failed to auto-provision SSO user {forwarded_user}: {e}")
+                        # Clear session on error
+                        request.session.pop("user", None)
+                        request.session.pop("sso_user", None)
+                        request.session.pop("is_admin", None)
+                else:
+                    # User not found and not in authorized groups, clear session
+                    request.session.pop("user", None)
+                    request.session.pop("sso_user", None)
+                    request.session.pop("is_admin", None)
+
+            except Exception as e:
+                logger.error(f"Error in SSO middleware: {e}")
+                # Error reading users, clear session
+                request.session.pop("user", None)
+                request.session.pop("sso_user", None)
+                request.session.pop("is_admin", None)
+
+        response = await call_next(request)
+        return response
 
 
 webgui_config = None
@@ -485,6 +572,10 @@ async def login(request) -> Response:
         config.read_config()
     except Exception:
         return PlainTextResponse("Error reading configuration file.")
+
+    if request.session.get("user") is not None:
+        return RedirectResponse(url="/", status_code=303)
+
     request.session.clear()
     template = "login.html"
     context = {
