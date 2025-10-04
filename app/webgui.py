@@ -112,6 +112,13 @@ class ProxySSOMiddleware(BaseHTTPMiddleware):
         forwarded_user = request.headers.get("x-forwarded-email", "")
         forwarded_groups = request.headers.get("x-forwarded-groups", "")
 
+        logger.info(f"SSO Middleware - Path: {request.url.path}")
+        logger.info(f"SSO Middleware - x-forwarded-email: {forwarded_user}")
+        logger.info(f"SSO Middleware - x-forwarded-groups: {forwarded_groups}")
+        logger.info(f"SSO Middleware - Current session user: {request.session.get('user', 'None')}")
+        logger.info(f"SSO Middleware - Current session sso_user: {request.session.get('sso_user', 'None')}")
+        logger.info(f"SSO Middleware - Current session is_admin: {request.session.get('is_admin', 'None')}")
+
         if forwarded_user:
             # Look up user by email in the users list
             try:
@@ -124,6 +131,8 @@ class ProxySSOMiddleware(BaseHTTPMiddleware):
                         username = user_key
                         break
 
+                logger.info(f"SSO Middleware - Existing username found: {username}")
+
                 # Parse user groups from header
                 user_groups = [group.strip() for group in forwarded_groups.split(",") if group.strip()]
 
@@ -131,24 +140,35 @@ class ProxySSOMiddleware(BaseHTTPMiddleware):
                 ad_users_group = os.getenv("AD_MERCURE_USERS_GROUP", "")
                 ad_admins_group = os.getenv("AD_MERCURE_ADMINS_GROUP", "")
 
+                logger.info(f"SSO Middleware - AD_MERCURE_USERS_GROUP: {ad_users_group}")
+                logger.info(f"SSO Middleware - AD_MERCURE_ADMINS_GROUP: {ad_admins_group}")
+                logger.info(f"SSO Middleware - Parsed user_groups: {user_groups}")
+
                 # Check if user is in authorized groups
                 is_in_users_group = ad_users_group and ad_users_group in user_groups
                 is_in_admins_group = ad_admins_group and ad_admins_group in user_groups
 
+                logger.info(f"SSO Middleware - is_in_users_group: {is_in_users_group}")
+                logger.info(f"SSO Middleware - is_in_admins_group: {is_in_admins_group}")
+
                 if username:
                     # Existing user - auto-provision session for SSO users
+                    logger.info(f"SSO Middleware - Setting session for existing user: {username}")
                     request.session["user"] = username
                     request.session["sso_user"] = "True"
 
                     # Set admin status based on AD admin group membership
                     if is_in_admins_group:
+                        logger.info(f"SSO Middleware - Setting admin status for user: {username}")
                         request.session["is_admin"] = "Jawohl"
                     else:
                         # Clear admin status if not in admin groups
+                        logger.info(f"SSO Middleware - Clearing admin status for user: {username}")
                         request.session.pop("is_admin", None)
 
                 elif is_in_users_group:
                     # Auto-provision new user if they're in the authorized users group
+                    logger.info(f"SSO Middleware - Auto-provisioning new user for email: {forwarded_user}")
                     try:
                         # Generate username from email (part before @)
                         new_username = forwarded_user.split("@")[0].lower().replace('.', '_')
@@ -160,6 +180,8 @@ class ProxySSOMiddleware(BaseHTTPMiddleware):
                             new_username = f"{original_username}_{counter}"
                             counter += 1
 
+                        logger.info(f"SSO Middleware - Creating new user: {new_username}")
+
                         # Create new user
                         users.users_list[new_username] = {
                             "email": forwarded_user.lower(),
@@ -170,12 +192,14 @@ class ProxySSOMiddleware(BaseHTTPMiddleware):
 
                         # Save the updated users list
                         users.save_users()
+                        logger.info(f"SSO Middleware - User {new_username} saved to users.json")
 
                         # Auto-provision session for the new SSO user
                         request.session["user"] = new_username
                         request.session["sso_user"] = "True"
 
                         if is_in_admins_group:
+                            logger.info(f"SSO Middleware - Setting admin status for new user: {new_username}")
                             request.session["is_admin"] = "Jawohl"
                         else:
                             request.session.pop("is_admin", None)
@@ -183,23 +207,28 @@ class ProxySSOMiddleware(BaseHTTPMiddleware):
                         logger.info(f"Auto-provisioned SSO user: {new_username} (email: {forwarded_user}, admin: {is_in_admins_group})")
 
                     except Exception as e:
-                        logger.error(f"Failed to auto-provision SSO user {forwarded_user}: {e}")
+                        logger.error(f"Failed to auto-provision SSO user {forwarded_user}: {e}", exc_info=True)
                         # Clear session on error
                         request.session.pop("user", None)
                         request.session.pop("sso_user", None)
                         request.session.pop("is_admin", None)
                 else:
                     # User not found and not in authorized groups, clear session
+                    logger.info(f"SSO Middleware - User {forwarded_user} not found and not in authorized groups, clearing session")
                     request.session.pop("user", None)
                     request.session.pop("sso_user", None)
                     request.session.pop("is_admin", None)
 
             except Exception as e:
-                logger.error(f"Error in SSO middleware: {e}")
+                logger.error(f"Error in SSO middleware: {e}", exc_info=True)
                 # Error reading users, clear session
                 request.session.pop("user", None)
                 request.session.pop("sso_user", None)
                 request.session.pop("is_admin", None)
+        else:
+            logger.info(f"SSO Middleware - No x-forwarded-email header found")
+
+        logger.info(f"SSO Middleware - Final session state - user: {request.session.get('user', 'None')}, sso_user: {request.session.get('sso_user', 'None')}, is_admin: {request.session.get('is_admin', 'None')}")
 
         response = await call_next(request)
         return response
