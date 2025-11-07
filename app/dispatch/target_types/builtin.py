@@ -10,6 +10,7 @@ from typing import Dict, Generator, List
 import common.config as config
 from common.constants import mercure_names
 from common.types import DicomTarget, DicomTLSTarget, DummyTarget, SftpTarget, Task
+from dispatch.process_dcmsend_result import parse as parse_dcmsend_result
 from pydicom import Dataset
 from webinterface.common import async_run
 from webinterface.dicom_client import DicomClientCouldNotFind, SimpleDicomClient
@@ -61,7 +62,7 @@ class DicomTargetHandler(SubprocessTargetHandler[DicomTarget]):
 
         dcmsend_status_file = str(Path(source_folder) / mercure_names.SENDLOG)
         command = split(
-            (f"""dcmsend {target_ip} {target_port} +sd {source_folder} -aet {target_aet_source} """
+            (f"""dcmsend {target_ip} {target_port} +r +sd {source_folder} -aet {target_aet_source} """
              f"""-aec {target_aet_target} -nuc +sp '*.dcm' -to 60 +crf {dcmsend_status_file}""")
         )
         return command, {}
@@ -86,6 +87,20 @@ class DicomTargetHandler(SubprocessTargetHandler[DicomTarget]):
         dcmsend_error_message = DCMSEND_ERROR_CODES.get(e.returncode, None)
         logger.exception(f"Failed command:\n {command} \nbecause of {dcmsend_error_message}")
         raise RuntimeError(f"{dcmsend_error_message}")
+
+    def subprocess_success_check(self, command: list) -> None:
+        result_file = Path(command[-1])
+        if result_file.exists():
+            parsed_result = parse_dcmsend_result(result_file)
+            logger.info(f"dcmsend result: {parsed_result}")
+            total_instances = parsed_result["summary"].get("sop_instances", 0)
+            success_instances = parsed_result["summary"].get("successful", 0)
+            if total_instances != success_instances:
+                raise RuntimeError(
+                    f"Only {success_instances} out of {total_instances} instances were sent successfully."
+                )
+        else:
+            raise RuntimeError(f"Result file {result_file} from dcmsend not found.")
 
     async def test_connection(self, target: DicomTarget, target_name: str):
         cecho_response = False

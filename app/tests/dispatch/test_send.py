@@ -8,6 +8,7 @@ import common
 from common.constants import mercure_names
 from common.monitor import m_events, severity, task_event
 from dispatch.send import execute, is_ready_for_sending
+from tests.testing_common import fake_check_output
 
 dummy_info = {
     "action": "route",
@@ -38,7 +39,8 @@ def test_execute_successful_case(fs, mocked):
     }
     fs.create_file("/var/data/source/a/" + mercure_names.TASKFILE, contents=json.dumps(target))
 
-    mocked.patch("dispatch.target_types.base.check_output", return_value="Success")
+    mocked.patch("dispatch.target_types.base.check_output", side_effect=fake_check_output)
+
     execute(Path(source), Path(success), Path(error), 1, 1)
 
     assert not Path(source).exists()
@@ -75,7 +77,7 @@ def test_execute_error_case(fs, mocked):
                 m_events.PROCESSING,
                 severity.ERROR,
                 """Failed command:
- ['dcmsend', '0.0.0.0', '11112', '+sd', '/var/data/source/a', '-aet', '-aec', 'foo', '-nuc', '+sp', '*.dcm', '-to', '60', '+crf', '/var/data/source/a/sent.txt'] 
+ ['dcmsend', '0.0.0.0', '11112', '+r', '+sd', '/var/data/source/a', '-aet', '-aec', 'foo', '-nuc', '+sp', '*.dcm', '-to', '60', '+crf', '/var/data/source/a/sent.txt'] 
 because of EXITCODE_COMMANDLINE_SYNTAX_ERROR""",  # noqa: E501,W291
             ),
             call(
@@ -95,7 +97,7 @@ because of EXITCODE_COMMANDLINE_SYNTAX_ERROR""",  # noqa: E501,W291
                 0,
                 "",
                 """Failed command:
- ['dcmsend', '0.0.0.0', '11112', '+sd', '/var/data/source/a', '-aet', '-aec', 'foo', '-nuc', '+sp', '*.dcm', '-to', '60', '+crf', '/var/data/source/a/sent.txt'] 
+ ['dcmsend', '0.0.0.0', '11112', '+r', '+sd', '/var/data/source/a', '-aet', '-aec', 'foo', '-nuc', '+sp', '*.dcm', '-to', '60', '+crf', '/var/data/source/a/sent.txt'] 
 because of EXITCODE_COMMANDLINE_SYNTAX_ERROR""",  # noqa: E501,W291
             ),
             call(

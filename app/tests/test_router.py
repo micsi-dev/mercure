@@ -17,8 +17,9 @@ from common.types import Rule, Task, TaskStudy
 from dispatch import dispatcher
 from pyfakefs.fake_filesystem import FakeFilesystem
 from routing import router
+from subprocess import check_output
 
-from .testing_common import generate_uid, mock_incoming_uid, mock_task_ids, process_dicom
+from .testing_common import generate_uid, mock_incoming_uid, mock_task_ids, process_dicom, fake_check_output
 
 rules = {
     "rules": {
@@ -160,9 +161,11 @@ def task_will_dispatch_to(task, config, fake_process) -> None:
     for target_item in task.dispatch.target_name:
         t = config.targets[target_item]
         # type: ignore
-        expect_command = (f"dcmsend {t.ip} {t.port} +sd /var/outgoing/{task.id} "
-                          f"-aet -aec {t.aet_target} -nuc +sp *.dcm -to 60 +crf /var/outgoing/{task.id}/sent.txt")
-        fake_process.register(expect_command)  # type: ignore
+        result_file_path = f"/var/outgoing/{task.id}/sent.txt"
+        expect_command = (f"dcmsend {t.ip} {t.port} +r +sd /var/outgoing/{task.id} "
+                          f"-aet -aec {t.aet_target} -nuc +sp *.dcm -to 60 +crf {result_file_path}")
+
+        fake_process.register(expect_command, callback=fake_check_output, callback_kwargs={"result_file": result_file_path})  # type: ignore
         common.monitor.configure("dispatcher", "test", config.bookkeeper)
         dispatcher.dispatch()
 

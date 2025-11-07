@@ -78,6 +78,9 @@ class SubprocessTargetHandler(TargetHandler[TargetTypeVar]):
     def _create_command(self, target: TargetTypeVar, source_folder: Path, task: Task):
         return ("", {})
 
+    def subprocess_success_check(self, command: list) -> None:
+        return None
+
     def send_to_target(
         self,
         task_id: str,
@@ -106,6 +109,7 @@ class SubprocessTargetHandler(TargetHandler[TargetTypeVar]):
                 output = check_output(
                     command, encoding="utf-8", stderr=subprocess.STDOUT, **opts
                 )
+                self.subprocess_success_check(command)
                 result += output
                 logger.info(output)
             # return result  # type: ignore  # Mypy doesn't know that check_output returns a string here?

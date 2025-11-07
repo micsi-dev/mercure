@@ -17,7 +17,7 @@ from docker.models.containers import ContainerCollection
 from process import processor
 from pytest_mock import MockerFixture
 from routing import router
-from tests.testing_common import FakeDockerContainer, make_fake_processor, mock_incoming_uid, mock_task_ids
+from tests.testing_common import FakeDockerContainer, make_fake_processor, mock_incoming_uid, mock_task_ids, fake_check_output
 from webinterface.queue import RestartTaskErrors, restart_dispatch
 
 logger = config.get_logger()
@@ -111,7 +111,7 @@ def test_restart_dispatch_success(fs, mocked):
     assert task_file_json["dispatch"]["retries"] is None
 
     # Once moved to outgoing folder, verify the execution/dispatching
-    mocked.patch("dispatch.target_types.base.check_output", return_value="Success")
+    mocked.patch("dispatch.target_types.base.check_output", side_effect=fake_check_output)
     response = execute(outgoing_folder / task_id, success_folder, error_folder, 1, 1)
 
     assert not (outgoing_folder / task_id).exists()
@@ -249,7 +249,7 @@ async def test_dispatching_with_processing(fs, mercure_config: Callable[[Dict], 
     assert task_file_json["dispatch"]["retries"] is None  # indicates that it hasn't retried at all
 
     # Once moved to outgoing folder, verify the execution/dispatching
-    mocked.patch("dispatch.target_types.base.check_output", return_value="Success")
+    mocked.patch("dispatch.target_types.base.check_output", side_effect=fake_check_output)
     response = execute(outgoing_folder / new_task_id, success_folder, error_folder, 1, 1)
     assert not (outgoing_folder / new_task_id).exists()  # it's not outgoing anymore
     assert (success_folder / new_task_id).exists()  # dispatching succeeded
