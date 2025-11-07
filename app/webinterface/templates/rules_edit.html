@@ -166,6 +166,9 @@
                                     <option value="study" {% if rules[rule]['action_trigger']=='study' %}selected{%
                                         endif%}>Completed
                                         Study</option>
+                                    <option value="patient" {% if rules[rule]['action_trigger']=='patient' %}selected{%
+                                        endif%}>Completed
+                                        Patient</option>
                                 </select>
                             </div>
                         </div>
@@ -212,6 +215,71 @@
                                     </option>
                                     <option value="ignore" {% if
                                         rules[rule]['study_force_completion_action']=='ignore' %}selected{% endif%}>
+                                        Ignore Timeout and Wait
+                                    </option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="field" id="patient_trigger_field">
+                        <label class="label">Patient Completion Condition</label>
+                        <div class="field has-addons">
+                            <div class="select">
+                                <select name="patient_trigger_condition" id="patient_trigger_condition">
+                                    <option value="timeout" {% if rules[rule]['patient_trigger_condition']=='timeout'
+                                        %}selected{% endif%}>Timeout Reached
+                                    </option>
+                                    <option value="received_modalities" {% if
+                                        rules[rule]['patient_trigger_condition']=='received_modalities' %}selected{% endif%}>
+                                        Listed Modalities Received
+                                    </option>
+                                    <option value="received_studies" {% if
+                                        rules[rule]['patient_trigger_condition']=='received_studies' %}selected{% endif%}>
+                                        Listed Studies Received
+                                    </option>
+                                </select>
+                            </div>
+                            <div class="control is-expanded" style="margin-left: 10px;">
+                                <div class="field has-addons" id="patient_trigger_modalities_section">
+                                    <input name="patient_trigger_modalities" id="patient_trigger_modalities" pattern="[^{}\x22]+"
+                                        class="input series_completion_fix" autocomplete='off' type="text"
+                                        placeholder="Modalities required (e.g., 'PT' and 'MR')"
+                                        value="{{rules[rule]['patient_trigger_modalities']}}">
+                                </div>
+                                <div class="field has-addons" id="patient_trigger_studies_section" style="display:none;">
+                                    <input name="patient_trigger_studies" id="patient_trigger_studies" pattern="[^{}\x22]+"
+                                        class="input series_completion_fix" autocomplete='off' type="text"
+                                        placeholder="Studies required for completion"
+                                        value="{{rules[rule]['patient_trigger_studies']}}">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="field" style="margin-top: 10px;">
+                            <label class="label">Patient Completion Timeout (seconds)</label>
+                            <div class="control">
+                                <input name="patient_trigger_timeout" id="patient_trigger_timeout" class="input"
+                                    type="number" min="60" step="60"
+                                    placeholder="Timeout in seconds (default: 7200 = 2 hours)"
+                                    value="{{rules[rule].get('patient_trigger_timeout', 7200)}}">
+                            </div>
+                            <p class="help">Time to wait for additional studies after the last study is received</p>
+                        </div>
+                    </div>
+                    <div class="field" id="force_patient_completion_field">
+                        <label class="label">Action for Incomplete Patients</label>
+                        <div class="select">
+                            <div class="control">
+                                <select name="patient_force_completion_action" id="patient_force_completion_action">
+                                    <option value="discard" {% if
+                                        rules[rule]['patient_force_completion_action']=='discard' %}selected{% endif%}>
+                                        Discard Patient
+                                    </option>
+                                    <option value="proceed" {% if
+                                        rules[rule]['patient_force_completion_action']=='proceed' %}selected{% endif%}>
+                                        Proceed with Received Studies
+                                    </option>
+                                    <option value="ignore" {% if
+                                        rules[rule]['patient_force_completion_action']=='ignore' %}selected{% endif%}>
                                         Ignore Timeout and Wait
                                     </option>
                                 </select>
@@ -580,6 +648,8 @@
     $('form').on('submit', validate);
     $('#rule').on('keyup', (evt)=> evt.target.value = evt.target.value.replace(/[{}\n]/g, ''))
     $('#study_trigger_series').on('keyup', (evt)=> evt.target.value = evt.target.value.replace(/[{}\x22\n]/g, ''))
+    $('#patient_trigger_modalities').on('keyup', (evt)=> evt.target.value = evt.target.value.replace(/[{}\x22\n]/g, ''))
+    $('#patient_trigger_studies').on('keyup', (evt)=> evt.target.value = evt.target.value.replace(/[{}\x22\n]/g, ''))
     
     function toggleTestRule() {
         if($("#testrule").is(":visible")) {
@@ -712,15 +782,27 @@
         $('#action_trigger').change(function () {
             var action_trigger = $(this).children("option:selected").val();
             var study_trigger = $('#study_trigger_condition').children("option:selected").val();
+            var patient_trigger = $('#patient_trigger_condition').children("option:selected").val();
+
             if (action_trigger == 'series') {
                 $('#study_trigger_field').hide();
                 $("#force_study_completion_field").hide();
+                $('#patient_trigger_field').hide();
+                $("#force_patient_completion_field").hide();
                 $('#study_trigger_series').prop('required', false);
-            } else {
+            } else if (action_trigger == 'study') {
                 $('#study_trigger_field').show();
+                $('#patient_trigger_field').hide();
+                $("#force_patient_completion_field").hide();
                 if (study_trigger == 'received_series') {
                     $("#force_study_completion_field").show();
                 }
+            } else if (action_trigger == 'patient') {
+                $('#study_trigger_field').hide();
+                $("#force_study_completion_field").hide();
+                $('#patient_trigger_field').show();
+                $("#force_patient_completion_field").show();
+                $('#study_trigger_series').prop('required', false);
             }
         });
 
@@ -738,9 +820,31 @@
             }
         });
 
+        $('#patient_trigger_condition').change(function () {
+            var patient_trigger = $(this).children("option:selected").val();
+
+            if (patient_trigger == 'timeout') {
+                $('#patient_trigger_modalities_section').hide();
+                $('#patient_trigger_studies_section').hide();
+                $('#patient_trigger_modalities').prop('required', false);
+                $('#patient_trigger_studies').prop('required', false);
+            } else if (patient_trigger == 'received_modalities') {
+                $('#patient_trigger_modalities_section').show();
+                $('#patient_trigger_studies_section').hide();
+                $('#patient_trigger_modalities').prop('required', true);
+                $('#patient_trigger_studies').prop('required', false);
+            } else if (patient_trigger == 'received_studies') {
+                $('#patient_trigger_modalities_section').hide();
+                $('#patient_trigger_studies_section').show();
+                $('#patient_trigger_modalities').prop('required', false);
+                $('#patient_trigger_studies').prop('required', true);
+            }
+        });
+
         $("#action").trigger('change');
         $("#action_trigger").trigger('change');
         $("#study_trigger_condition").trigger('change');
+        $("#patient_trigger_condition").trigger('change');
 
         var dropdown = document.querySelector('.dropdown');
         dropdown.addEventListener('click', function (event) {
@@ -768,6 +872,12 @@
         $("#savebutton").click(function(){
             if ($("#action_trigger").val() == 'series') {
                 $('#study_trigger_series').prop('required', false);
+                $('#patient_trigger_modalities').prop('required', false);
+                $('#patient_trigger_studies').prop('required', false);
+            }
+            if ($("#action_trigger").val() == 'study') {
+                $('#patient_trigger_modalities').prop('required', false);
+                $('#patient_trigger_studies').prop('required', false);
             }
         });       
 

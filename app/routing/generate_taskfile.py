@@ -18,7 +18,18 @@ import common.config as config
 import common.monitor as monitor
 from common.constants import mercure_actions, mercure_defs, mercure_names, mercure_options, mercure_rule
 from common.helper import get_now_str
-from common.types import EmptyDict, Rule, Task, TaskDispatch, TaskDispatchStatus, TaskInfo, TaskProcessing, TaskStudy
+from common.types import (
+    EmptyDict,
+    Rule,
+    Task,
+    TaskDispatch,
+    TaskDispatchStatus,
+    TaskInfo,
+    TaskPatient,
+    TaskPatientStudy,
+    TaskProcessing,
+    TaskStudy,
+)
 from typing_extensions import Literal
 
 # Create local logger instance
@@ -28,7 +39,7 @@ logger = config.get_logger()
 def compose_task(
     task_id: str,
     uid: str,
-    uid_type: Literal["series", "study"],
+    uid_type: Literal["series", "study", "patient"],
     triggered_rules: Dict[str, Literal[True]],
     applied_rule: str,
     tags_list: Dict[str, str],
@@ -49,6 +60,8 @@ def compose_task(
         process=add_processing(applied_rule) or cast(EmptyDict, {}),
         # Add information about the study, included all collected series
         study=add_study(uid, uid_type, applied_rule, tags_list) or cast(EmptyDict, {}),
+        # Add information about the patient, included all collected studies
+        patient=add_patient(uid, uid_type, applied_rule, tags_list) or cast(EmptyDict, {}),
     )
     # task.dispatch = "foo"
     logger.debug("Generated task:")
@@ -118,13 +131,13 @@ def add_processing(applied_rule: str) -> Optional[Union[TaskProcessing, List[Tas
 
 
 def add_study(
-    uid: str, uid_type: Literal["series", "study"], applied_rule: str, tags_list: Dict[str, str]
+    uid: str, uid_type: Literal["series", "study", "patient"], applied_rule: str, tags_list: Dict[str, str]
 ) -> Optional[TaskStudy]:
     """
-    Adds study information into the task file. Returns nothing if the task is a series-level task
+    Adds study information into the task file. Returns nothing if the task is a series-level or patient-level task
     """
-    # If the current task is a series task, then don't add study information
-    if uid_type == "series":
+    # If the current task is a series or patient task, then don't add study information
+    if uid_type in ("series", "patient"):
         return None
 
     study_info: TaskStudy = TaskStudy(
@@ -140,6 +153,32 @@ def add_study(
     )
 
     return study_info
+
+
+def add_patient(
+    uid: str, uid_type: Literal["series", "study", "patient"], applied_rule: str, tags_list: Dict[str, str]
+) -> Optional[TaskPatient]:
+    """
+    Adds patient information into the task file. Returns nothing if the task is not a patient-level task
+    """
+    # If the current task is not a patient task, then don't add patient information
+    if uid_type != "patient":
+        return None
+
+    patient_info: TaskPatient = TaskPatient(
+        patient_id=uid,
+        complete_trigger=config.mercure.rules[applied_rule].patient_trigger_condition,
+        complete_required_modalities=config.mercure.rules[applied_rule].patient_trigger_modalities,
+        complete_required_studies=config.mercure.rules[applied_rule].patient_trigger_studies,
+        creation_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        last_receive_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        received_studies=[],
+        received_modalities=[],
+        complete_force=False,
+        complete_force_action=config.mercure.rules[applied_rule].patient_force_completion_action,
+    )
+
+    return patient_info
 
 
 def add_dispatching(
@@ -214,7 +253,7 @@ def add_dispatching(
 
 def add_info(
     uid: str,
-    uid_type: Literal["series", "study"],
+    uid_type: Literal["series", "study", "patient"],
     triggered_rules: Dict[str, Literal[True]],
     applied_rule: str,
     tags_list: Dict[str, str],
@@ -349,6 +388,96 @@ def update_study_task(
         task.to_file(task_filename)
     except Exception:
         logger.exception(f"Unable to write task file {task_filename}", task.id)  # handle_error
+        return False, ""
+
+    monitor.send_update_task(task)
+
+    return True, task.id
+
+
+def create_patient_task(
+    task_id: str,
+    target_folder: Path,
+    triggered_rules: Dict[str, Literal[True]],
+    applied_rule: str,
+    patient_id: str,
+    tags_list: Dict[str, str],
+) -> bool:
+    """
+    Generate task file with information on the patient
+    """
+    # Compose the JSON content for the file
+    task = compose_task(task_id, patient_id, "patient", triggered_rules, applied_rule, tags_list, "")
+    monitor.send_update_task(task)
+
+    task_filename = target_folder / mercure_names.TASKFILE
+    logger.debug(f"Writing patient task file {task_filename}")
+    try:
+        task.to_file(task_filename)
+    except Exception:
+        logger.error(f"Unable to create patient task file {task_filename}", task.id)
+        return False
+
+    return True
+
+
+def update_patient_task(
+    task_id: str,
+    folder: Path,
+    study_uid: str,
+    modality: str,
+    series_count: int,
+    series_uids: List[str],
+) -> Tuple[bool, str]:
+    """
+    Update the patient task file with information from the latest received study
+    """
+    task_filename = folder / mercure_names.TASKFILE
+
+    # Load existing task file. Raise error if it does not exist
+    try:
+        task = Task.from_file(task_filename)
+    except Exception:
+        logger.error(f"Unable to open patient task file {task_filename}", task_id)
+        return False, ""
+
+    # Ensure that the task file contains the patient information
+    if not task.patient:
+        logger.error(f"Patient information missing in task file {task_filename}", task_id)
+        return False, ""
+
+    patient = cast(TaskPatient, task.patient)
+
+    # Remember the time when the last study was received, as needed to determine completion on timeout
+    patient.last_receive_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # Create study information
+    patient_study = TaskPatientStudy(
+        study_uid=study_uid,
+        modality=modality,
+        series_count=series_count,
+        series_uids=series_uids,
+        received_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    )
+
+    # Remember all received studies
+    if patient.received_studies and (isinstance(patient.received_studies, list)):
+        patient.received_studies.append(patient_study)
+    else:
+        patient.received_studies = [patient_study]
+
+    # Remember all received modalities for completion checking
+    if patient.received_modalities and (isinstance(patient.received_modalities, list)):
+        if modality not in patient.received_modalities:
+            patient.received_modalities.append(modality)
+    else:
+        patient.received_modalities = [modality]
+
+    # Save the updated file back to disk
+    try:
+        task.to_file(task_filename)
+    except Exception:
+        logger.exception(f"Unable to write task file {task_filename}", task.id)
         return False, ""
 
     monitor.send_update_task(task)
