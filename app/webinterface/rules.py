@@ -210,6 +210,7 @@ async def rules_edit_post(request) -> Response:
         patient_trigger_condition=form.get("patient_trigger_condition", "timeout"),
         patient_trigger_modalities=form.get("patient_trigger_modalities", ""),
         patient_trigger_studies=form.get("patient_trigger_studies", ""),
+        patient_trigger_series=form.get("patient_trigger_series", ""),
         patient_force_completion_action=form.get("patient_force_completion_action", ""),
         patient_trigger_timeout=int(form.get("patient_trigger_timeout", "7200")),
         priority=form.get("priority", "normal"),

@@ -170,10 +170,12 @@ def add_patient(
         complete_trigger=config.mercure.rules[applied_rule].patient_trigger_condition,
         complete_required_modalities=config.mercure.rules[applied_rule].patient_trigger_modalities,
         complete_required_studies=config.mercure.rules[applied_rule].patient_trigger_studies,
+        complete_required_series=config.mercure.rules[applied_rule].patient_trigger_series,
         creation_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         last_receive_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         received_studies=[],
         received_modalities=[],
+        received_series=[],
         complete_force=False,
         complete_force_action=config.mercure.rules[applied_rule].patient_force_completion_action,
     )
@@ -428,6 +430,7 @@ def update_patient_task(
     modality: str,
     series_count: int,
     series_uids: List[str],
+    series_descriptions: Optional[List[str]] = None,
 ) -> Tuple[bool, str]:
     """
     Update the patient task file with information from the latest received study
@@ -472,6 +475,15 @@ def update_patient_task(
             patient.received_modalities.append(modality)
     else:
         patient.received_modalities = [modality]
+
+    # Remember all received series descriptions for completion checking
+    if series_descriptions:
+        if patient.received_series and (isinstance(patient.received_series, list)):
+            for series_desc in series_descriptions:
+                if series_desc not in patient.received_series:
+                    patient.received_series.append(series_desc)
+        else:
+            patient.received_series = series_descriptions.copy()
 
     # Save the updated file back to disk
     try:

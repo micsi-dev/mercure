@@ -196,7 +196,7 @@ class UnsetRule(TypedDict):
 
 StudyTriggerCondition = Literal["timeout", "received_series"]
 StudyForceCompletionAction = Literal["discard", "proceed", "ignore"]
-PatientTriggerCondition = Literal["timeout", "received_modalities", "received_studies"]
+PatientTriggerCondition = Literal["timeout", "received_modalities", "received_studies", "received_series"]
 PatientForceCompletionAction = Literal["discard", "proceed", "ignore"]
 
 
@@ -217,6 +217,7 @@ class Rule(BaseModel, Compat):
     patient_force_completion_action: PatientForceCompletionAction = "discard"
     patient_trigger_modalities: str = ""
     patient_trigger_studies: str = ""
+    patient_trigger_series: str = ""
     patient_trigger_timeout: int = 7200  # 2 hours default
     priority: Literal["normal", "urgent", "offpeak"] = "normal"
     processing_module: Union[str, List[str]] = ""
@@ -391,10 +392,12 @@ class TaskPatient(BaseModel, Compat):
     complete_trigger: Optional[PatientTriggerCondition]
     complete_required_modalities: str
     complete_required_studies: str
+    complete_required_series: str
     creation_time: str
     last_receive_time: str
     received_studies: Optional[List[TaskPatientStudy]]
     received_modalities: Optional[List[str]]
+    received_series: Optional[List[str]]
     complete_force: bool = False
     complete_force_action: Optional[PatientForceCompletionAction] = "discard"
 

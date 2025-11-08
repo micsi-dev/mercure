@@ -385,8 +385,11 @@ def push_studylevel_patient(study: str, task: Task) -> bool:
 
     # Count series in the study
     series_uids = []
+    series_descriptions = []
     if task.study and task.study.received_series_uid:
         series_uids = task.study.received_series_uid
+    if task.study and task.study.received_series:
+        series_descriptions = task.study.received_series
     series_count = len(series_uids)
 
     # Create or update patient folder
@@ -443,6 +446,7 @@ def push_studylevel_patient(study: str, task: Task) -> bool:
         modality,
         series_count,
         series_uids,
+        series_descriptions,
     )
 
     if not result:
@@ -693,6 +697,7 @@ def is_patient_complete(folder: str, pending_studies: Dict[str, float]) -> bool:
         complete_trigger: PatientTriggerCondition = patient.complete_trigger
         complete_required_modalities = patient.get("complete_required_modalities", "")
         complete_required_studies = patient.get("complete_required_studies", "")
+        complete_required_series = patient.get("complete_required_series", "")
 
         # Check for trigger condition
         if complete_trigger == "timeout":
@@ -701,6 +706,8 @@ def is_patient_complete(folder: str, pending_studies: Dict[str, float]) -> bool:
             return check_patient_modalities(task, complete_required_modalities)
         elif complete_trigger == "received_studies":
             return check_patient_studies(task, complete_required_studies)
+        elif complete_trigger == "received_series":
+            return check_patient_series(task, complete_required_series)
         else:
             logger.error(f"Invalid trigger condition in task file in patient folder {folder}", task.id)
             return False
@@ -818,6 +825,20 @@ def check_patient_studies(task: TaskHasPatient, required_studies: str) -> bool:
 
     # Check if the completion criteria is fulfilled
     return rule_evaluation.parse_completion_series(task.id, required_studies, received_studies)
+
+
+def check_patient_series(task: TaskHasPatient, required_series: str) -> bool:
+    """
+    Checks if all series required for patient completion have been received
+    """
+    received_series = []
+
+    # Fetch the list of received series descriptions from the task file
+    if (task.patient.received_series) and (isinstance(task.patient.received_series, list)):
+        received_series = task.patient.received_series
+
+    # Check if the completion criteria is fulfilled
+    return rule_evaluation.parse_completion_series(task.id, required_series, received_series)
 
 
 @log_helpers.clear_task_decorator

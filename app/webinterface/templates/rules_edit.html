@@ -237,6 +237,10 @@
                                         rules[rule]['patient_trigger_condition']=='received_studies' %}selected{% endif%}>
                                         Listed Studies Received
                                     </option>
+                                    <option value="received_series" {% if
+                                        rules[rule]['patient_trigger_condition']=='received_series' %}selected{% endif%}>
+                                        Listed Series Received
+                                    </option>
                                 </select>
                             </div>
                             <div class="control is-expanded" style="margin-left: 10px;">
@@ -251,6 +255,12 @@
                                         class="input series_completion_fix" autocomplete='off' type="text"
                                         placeholder="Studies required for completion"
                                         value="{{rules[rule]['patient_trigger_studies']}}">
+                                </div>
+                                <div class="field has-addons" id="patient_trigger_series_section" style="display:none;">
+                                    <input name="patient_trigger_series" id="patient_trigger_series" pattern="[^{}\x22]+"
+                                        class="input series_completion_fix" autocomplete='off' type="text"
+                                        placeholder="Series required (e.g., 'T1' and 'T2')"
+                                        value="{{rules[rule]['patient_trigger_series']}}">
                                 </div>
                             </div>
                         </div>
@@ -650,6 +660,7 @@
     $('#study_trigger_series').on('keyup', (evt)=> evt.target.value = evt.target.value.replace(/[{}\x22\n]/g, ''))
     $('#patient_trigger_modalities').on('keyup', (evt)=> evt.target.value = evt.target.value.replace(/[{}\x22\n]/g, ''))
     $('#patient_trigger_studies').on('keyup', (evt)=> evt.target.value = evt.target.value.replace(/[{}\x22\n]/g, ''))
+    $('#patient_trigger_series').on('keyup', (evt)=> evt.target.value = evt.target.value.replace(/[{}\x22\n]/g, ''))
     
     function toggleTestRule() {
         if($("#testrule").is(":visible")) {
@@ -826,18 +837,31 @@
             if (patient_trigger == 'timeout') {
                 $('#patient_trigger_modalities_section').hide();
                 $('#patient_trigger_studies_section').hide();
+                $('#patient_trigger_series_section').hide();
                 $('#patient_trigger_modalities').prop('required', false);
                 $('#patient_trigger_studies').prop('required', false);
+                $('#patient_trigger_series').prop('required', false);
             } else if (patient_trigger == 'received_modalities') {
                 $('#patient_trigger_modalities_section').show();
                 $('#patient_trigger_studies_section').hide();
+                $('#patient_trigger_series_section').hide();
                 $('#patient_trigger_modalities').prop('required', true);
                 $('#patient_trigger_studies').prop('required', false);
+                $('#patient_trigger_series').prop('required', false);
             } else if (patient_trigger == 'received_studies') {
                 $('#patient_trigger_modalities_section').hide();
                 $('#patient_trigger_studies_section').show();
+                $('#patient_trigger_series_section').hide();
                 $('#patient_trigger_modalities').prop('required', false);
                 $('#patient_trigger_studies').prop('required', true);
+                $('#patient_trigger_series').prop('required', false);
+            } else if (patient_trigger == 'received_series') {
+                $('#patient_trigger_modalities_section').hide();
+                $('#patient_trigger_studies_section').hide();
+                $('#patient_trigger_series_section').show();
+                $('#patient_trigger_modalities').prop('required', false);
+                $('#patient_trigger_studies').prop('required', false);
+                $('#patient_trigger_series').prop('required', true);
             }
         });
 
@@ -874,10 +898,12 @@
                 $('#study_trigger_series').prop('required', false);
                 $('#patient_trigger_modalities').prop('required', false);
                 $('#patient_trigger_studies').prop('required', false);
+                $('#patient_trigger_series').prop('required', false);
             }
             if ($("#action_trigger").val() == 'study') {
                 $('#patient_trigger_modalities').prop('required', false);
                 $('#patient_trigger_studies').prop('required', false);
+                $('#patient_trigger_series').prop('required', false);
             }
         });       
 
