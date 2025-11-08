@@ -199,6 +199,7 @@ def main(args=sys.argv[1:]) -> None:
     logger.info(
         f"""Incoming folder: {config.mercure.incoming_folder}
         Studies folder: {config.mercure.studies_folder}
+        Patients folder: {config.mercure.patients_folder}
         Outgoing folder: {config.mercure.outgoing_folder}
         Processing folder: {config.mercure.processing_folder}"""
     )

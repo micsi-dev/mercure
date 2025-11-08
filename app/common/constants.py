@@ -113,6 +113,7 @@ class mercure_options:
     FALSE = "False"
     SERIES = "series"
     STUDY = "study"
+    PATIENT = "patient"
     NORMAL = "normal"
     URGENT = "urgent"
     OFFPEAK = "offpeak"
