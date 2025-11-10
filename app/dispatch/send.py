@@ -199,7 +199,8 @@ def execute(
 
             try:
                 handler = target_types.get_handler(target)
-                file_count = len(list(Path(source_folder).glob(mercure_names.DCMFILTER)))
+                # Count DICOM files at any level (handles patient-level tasks with study subfolders)
+                file_count = len(list(Path(source_folder).rglob(mercure_names.DCMFILTER)))
                 monitor.send_task_event(
                     task_event.DISPATCH_BEGIN,
                     task_content.id,
