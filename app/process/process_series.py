@@ -414,13 +414,12 @@ async def process_series(folder: Path) -> None:
             needs_dispatching = True
 
         # Remember the number of incoming DCM files (for logging purpose)
-        # Use rglob to recursively find DICOM files at any level (handles patient-level tasks with study subfolders)
+        # Use rglob for robustness (patient-level tasks are flattened before reaching here)
         file_count_begin = len(list(folder.rglob(mercure_names.DCMFILTER)))
 
         (folder / "in").mkdir()
         for child in folder.iterdir():
-            # Move both files and directories (for patient-level tasks with study subfolders)
-            if child.name != ".processing":
+            if child.is_file() and child.name != ".processing":
                 # logger.info(f"Moving {child}")
                 child.rename(folder / "in" / child.name)
         (folder / "out").mkdir()

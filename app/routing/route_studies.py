@@ -1011,15 +1011,40 @@ def move_patient_folder(task_id: Union[str, None], patient: str, destination: st
         return False
 
     # Move all files except the lock file
-    for entry in list(os.scandir(source_folder)):
-        # Move all files but exclude the lock file in the source folder
-        if not entry.name.endswith(mercure_names.LOCK):
-            try:
-                shutil.move(source_folder + "/" + entry.name, destination_folder + "/" + entry.name)
-            except Exception:
-                logger.error(
-                    f"Problem while pushing file {entry} from {source_folder} to {destination_folder}", task_id
-                )
+    # For PROCESSING destination, flatten the structure (move files from study subfolders to root)
+    # For other destinations, keep the hierarchical structure for archival/debugging
+    if destination == "PROCESSING":
+        for entry in list(os.scandir(source_folder)):
+            if entry.name.endswith(mercure_names.LOCK):
+                continue
+            if entry.is_file():
+                # Move files (task.json, etc.) directly to destination
+                try:
+                    shutil.move(source_folder + "/" + entry.name, destination_folder + "/" + entry.name)
+                except Exception:
+                    logger.error(
+                        f"Problem while pushing file {entry.name} from {source_folder} to {destination_folder}", task_id
+                    )
+            elif entry.is_dir():
+                # For directories (study folders), move all contained files to destination root
+                study_folder = Path(source_folder) / entry.name
+                for study_entry in list(os.scandir(study_folder)):
+                    try:
+                        shutil.move(str(study_folder / study_entry.name), destination_folder + "/" + study_entry.name)
+                    except Exception:
+                        logger.error(
+                            f"Problem while pushing file {study_entry.name} from study folder to {destination_folder}", task_id
+                        )
+    else:
+        # For non-processing destinations, move everything as-is (keep study subfolders)
+        for entry in list(os.scandir(source_folder)):
+            if not entry.name.endswith(mercure_names.LOCK):
+                try:
+                    shutil.move(source_folder + "/" + entry.name, destination_folder + "/" + entry.name)
+                except Exception:
+                    logger.error(
+                        f"Problem while pushing file {entry} from {source_folder} to {destination_folder}", task_id
+                    )
 
     # Remove the lock file in the target folder. Would happen automatically when leaving the function,
     # but better to do explicitly with error handling
