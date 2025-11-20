@@ -8,6 +8,7 @@ Helper functions for mercure's processor module
 import json
 import os
 import shutil
+import subprocess
 import sys
 import uuid
 from datetime import datetime
@@ -86,6 +87,82 @@ async def nomad_runtime(task: Task, folder: Path, file_count_begin: int, task_pr
 
 
 docker_pull_throttle: Dict[str, datetime] = {}
+
+
+def verify_container_signature(docker_tag: str, module: Module) -> bool:
+    """
+    Verify container image signature using Sigstore/Cosign.
+
+    Args:
+        docker_tag: Full Docker image reference (e.g., "mycompany/algorithm:v1.0")
+        module: Module configuration containing signature requirements
+
+    Returns:
+        True if signature verification succeeds or is not required
+        False if signature verification fails
+
+    Raises:
+        Exception: If cosign is not installed or verification fails critically
+    """
+    if not getattr(module, 'require_signature', False):
+        logger.debug(f"Signature verification not required for {docker_tag}")
+        return True
+
+    cert_identity = getattr(module, 'signature_certificate_identity', '')
+    cert_oidc_issuer = getattr(module, 'signature_certificate_oidc_issuer', '')
+
+    if not cert_identity or not cert_oidc_issuer:
+        logger.error(f"Signature verification enabled for {docker_tag} but certificate identity or OIDC issuer not configured")
+        return False
+
+    # Check if cosign is installed
+    try:
+        result = subprocess.run(
+            ["cosign", "version"],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        if result.returncode != 0:
+            raise Exception("cosign command failed")
+    except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as e:
+        logger.error(f"cosign not installed or not accessible: {e}")
+        logger.error("Install cosign: https://docs.sigstore.dev/cosign/installation/")
+        raise Exception("Signature verification required but cosign not available")
+
+    logger.info(f"Verifying signature for {docker_tag} with identity={cert_identity}, issuer={cert_oidc_issuer}")
+
+    try:
+        # Verify signature using cosign with certificate-based verification
+        # This uses the public Sigstore/Rekor transparency log
+        result = subprocess.run(
+            [
+                "cosign", "verify",
+                docker_tag,
+                "--certificate-identity", cert_identity,
+                "--certificate-oidc-issuer", cert_oidc_issuer,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60  # Signature verification can take time due to transparency log checks
+        )
+
+        if result.returncode == 0:
+            logger.info(f"✓ Signature verification PASSED for {docker_tag}")
+            logger.debug(f"Cosign output: {result.stdout}")
+            return True
+        else:
+            logger.error(f"✗ Signature verification FAILED for {docker_tag}")
+            logger.error(f"Cosign stderr: {result.stderr}")
+            logger.error(f"Cosign stdout: {result.stdout}")
+            return False
+
+    except subprocess.TimeoutExpired:
+        logger.error(f"Signature verification timed out for {docker_tag}")
+        return False
+    except Exception as e:
+        logger.error(f"Signature verification error for {docker_tag}: {e}")
+        return False
 
 
 async def docker_runtime(task: Task, folder: Path, file_count_begin: int, task_processing: TaskProcessing) -> bool:
@@ -199,28 +276,48 @@ async def docker_runtime(task: Task, folder: Path, file_count_begin: int, task_p
 
     # Get the latest image from Docker Hub
     if perform_image_update:
+        pull_start_time = datetime.now()
         try:
             docker_pull_throttle[docker_tag] = datetime.now()
             logger.info("Checking for update of docker image " + docker_tag + " ...")
             pulled_image = docker_client.images.pull(docker_tag)
+
+            # Measure and log pull duration
+            pull_duration = (datetime.now() - pull_start_time).total_seconds()
+
             if pulled_image is not None:
                 digest_string = (
                     pulled_image.attrs.get("RepoDigests")[0] if pulled_image.attrs.get("RepoDigests") else "None"
                 )
                 logger.info("Using DIGEST " + digest_string)
+
+            # Log pull duration and warn if excessive
+            if pull_duration > 60:  # Warn if pull takes more than 1 minute
+                logger.warning(f"Image pull for {docker_tag} took {pull_duration:.1f}s (excessive delay detected)")
+            else:
+                logger.info(f"Image pull completed in {pull_duration:.1f}s")
+
             # Clean dangling container images, which occur when the :latest image has been replaced
             prune_result = docker_client.images.prune(filters={"dangling": True})
             logger.info(prune_result)
             logger.info("Update done")
         except docker.errors.APIError as e:  # type: ignore
             # Network/registry connectivity issues - will use cached image
-            logger.warning(f"Registry unavailable for {docker_tag}, using cached image: {str(e)}")
+            pull_duration = (datetime.now() - pull_start_time).total_seconds()
+            logger.warning(f"Registry unavailable for {docker_tag} after {pull_duration:.1f}s, using cached image: {str(e)}")
         except docker.errors.NotFound:  # type: ignore
             # Image doesn't exist in registry (likely local/unpublished image)
-            logger.info(f"Image {docker_tag} not found in registry (this is normal for local/unpublished modules)")
+            pull_duration = (datetime.now() - pull_start_time).total_seconds()
+            logger.info(f"Image {docker_tag} not found in registry after {pull_duration:.1f}s (this is normal for local/unpublished modules)")
         except Exception as e:
             # Catch-all for other issues
-            logger.info(f"Couldn't check for module update: {str(e)}")
+            pull_duration = (datetime.now() - pull_start_time).total_seconds()
+            logger.info(f"Couldn't check for module update after {pull_duration:.1f}s: {str(e)}")
+
+    # Verify container signature if required
+    if not verify_container_signature(docker_tag, module):
+        logger.error(f"Container signature verification failed for {docker_tag}. Aborting processing.", task.id)
+        return False
 
     # Run the container and handle errors of running the container
     processing_success = True
