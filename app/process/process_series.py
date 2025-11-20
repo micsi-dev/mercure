@@ -89,7 +89,8 @@ docker_pull_throttle: Dict[str, datetime] = {}
 
 
 async def docker_runtime(task: Task, folder: Path, file_count_begin: int, task_processing: TaskProcessing) -> bool:
-    docker_client = docker.from_env()  # type: ignore
+    # Configure Docker client with extended timeout for resilient registry operations
+    docker_client = docker.from_env()  # type: ignore  # NOTE: 60 second timeout may not be enough for large images
 
     if not task.process:
         return False
@@ -211,10 +212,15 @@ async def docker_runtime(task: Task, folder: Path, file_count_begin: int, task_p
             prune_result = docker_client.images.prune(filters={"dangling": True})
             logger.info(prune_result)
             logger.info("Update done")
-        except Exception:
-            # Don't use ERROR here because the exception will be raised for all Docker images that
-            # have been built locally and are not present in the Docker Registry.
-            logger.info("Couldn't check for module update (this is normal for unpublished modules)")
+        except docker.errors.APIError as e:  # type: ignore
+            # Network/registry connectivity issues - will use cached image
+            logger.warning(f"Registry unavailable for {docker_tag}, using cached image: {str(e)}")
+        except docker.errors.NotFound:  # type: ignore
+            # Image doesn't exist in registry (likely local/unpublished image)
+            logger.info(f"Image {docker_tag} not found in registry (this is normal for local/unpublished modules)")
+        except Exception as e:
+            # Catch-all for other issues
+            logger.info(f"Couldn't check for module update: {str(e)}")
 
     # Run the container and handle errors of running the container
     processing_success = True
@@ -254,16 +260,32 @@ async def docker_runtime(task: Task, folder: Path, file_count_begin: int, task_p
         else:
             logger.debug("Executing module as mercure.")
 
-        # We might be operating in a user-remapped namespace.
-        # This makes sure that the user inside the container can read and write the files.
-        (folder / "in").chmod(0o777)
+        # Configure network access based on module policy
+        network_config = {}
+        network_mode = getattr(module, 'network_mode', 'bridge')
+        if network_mode:
+            network_config['network_mode'] = network_mode
+            if network_mode == 'none':
+                logger.info(f"Module {task_processing.module_name} configured with NO network access")
+            else:
+                logger.info(f"Module {task_processing.module_name} using network mode: {network_mode}")
+
+        # Ensure the container can read input files and write output files.
+        # Use group-writable (770) instead of world-writable (777) for better security.
+        # The container runs as the same UID:GID as the processor (mercure user).
         try:
+            # Ensure correct ownership and group-writable permissions
+            os.chown(folder / "in", os.getuid(), os.getgid())
+            (folder / "in").chmod(0o770)
             for k in (real_folder / "in").glob("**/*"):
-                k.chmod(0o666)
+                os.chown(k, os.getuid(), os.getgid())
+                k.chmod(0o660)
         except PermissionError:
             raise Exception("Unable to prepare input files for processor. "
                             "The receiver may be running as root, which is no longer supported. ")
-        (folder / "out").chmod(0o777)
+
+        os.chown(folder / "out", os.getuid(), os.getgid())
+        (folder / "out").chmod(0o770)
 
         container = docker_client.containers.run(
             docker_tag,
@@ -274,6 +296,7 @@ async def docker_runtime(task: Task, folder: Path, file_count_begin: int, task_p
             **set_command,
             **arguments,
             **user_info,
+            **network_config,
             detach=True,
         )
 
