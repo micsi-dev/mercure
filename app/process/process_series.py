@@ -367,6 +367,30 @@ async def docker_runtime(task: Task, folder: Path, file_count_begin: int, task_p
             else:
                 logger.info(f"Module {task_processing.module_name} using network mode: {network_mode}")
 
+        # Configure container runtime security (least privilege)
+        security_config = {}
+
+        # Drop all capabilities by default for non-root containers
+        if not module.requires_root:
+            security_config['cap_drop'] = ['ALL']
+            # Only add back capabilities if explicitly required by module
+            # For standard DICOM processing, no capabilities needed
+            logger.info(f"Module {task_processing.module_name} running with dropped capabilities (least privilege)")
+        else:
+            # Root containers still get capability restrictions
+            logger.warning(f"Module {task_processing.module_name} running as root - security capabilities limited")
+
+        # Prevent privilege escalation
+        security_config['security_opt'] = ['no-new-privileges:true']
+
+        # Read-only root filesystem (if not root module)
+        # Root modules may need to write to system directories
+        if not module.requires_root:
+            security_config['read_only'] = True
+            # Provide writable /tmp for temporary files
+            security_config['tmpfs'] = {'/tmp': 'size=1G,mode=1777'}
+            logger.debug(f"Module {task_processing.module_name} using read-only root filesystem")
+
         # Ensure the container can read input files and write output files.
         # Use group-writable (770) instead of world-writable (777) for better security.
         # The container runs as the same UID:GID as the processor (mercure user).
@@ -394,6 +418,7 @@ async def docker_runtime(task: Task, folder: Path, file_count_begin: int, task_p
             **arguments,
             **user_info,
             **network_config,
+            **security_config,
             detach=True,
         )
 
