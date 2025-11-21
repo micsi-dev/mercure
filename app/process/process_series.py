@@ -277,6 +277,35 @@ async def docker_runtime(task: Task, folder: Path, file_count_begin: int, task_p
     # Get the latest image from Docker Hub
     if perform_image_update:
         pull_start_time = datetime.now()
+
+        # Parse docker tag to extract registry, repository, and tag
+        # Format: [registry/]repository[:tag|@digest]
+        tag_parts = docker_tag.split('/')
+        if len(tag_parts) == 1:
+            # No registry specified, defaults to Docker Hub
+            registry_endpoint = "registry-1.docker.io"
+            repository_path = tag_parts[0]
+        elif '.' in tag_parts[0] or ':' in tag_parts[0]:
+            # First part contains registry (has . or :)
+            registry_endpoint = tag_parts[0]
+            repository_path = '/'.join(tag_parts[1:])
+        else:
+            # Docker Hub with namespace (e.g., micsi/mercure-module)
+            registry_endpoint = "registry-1.docker.io"
+            repository_path = docker_tag
+
+        # Extract tag or digest
+        if '@' in repository_path:
+            repository, digest = repository_path.rsplit('@', 1)
+            tag = None
+        elif ':' in repository_path:
+            repository, tag = repository_path.rsplit(':', 1)
+            digest = None
+        else:
+            repository = repository_path
+            tag = "latest"
+            digest = None
+
         try:
             docker_pull_throttle[docker_tag] = datetime.now()
             logger.info("Checking for update of docker image " + docker_tag + " ...")
@@ -284,12 +313,33 @@ async def docker_runtime(task: Task, folder: Path, file_count_begin: int, task_p
 
             # Measure and log pull duration
             pull_duration = (datetime.now() - pull_start_time).total_seconds()
+            pull_timestamp = datetime.now().isoformat()
 
             if pulled_image is not None:
-                digest_string = (
+                # Extract actual digest from pulled image
+                actual_digest = (
                     pulled_image.attrs.get("RepoDigests")[0] if pulled_image.attrs.get("RepoDigests") else "None"
                 )
-                logger.info("Using DIGEST " + digest_string)
+
+                # Extract just the digest hash (after @sha256:)
+                if '@' in actual_digest:
+                    digest_hash = actual_digest.split('@')[1]
+                else:
+                    digest_hash = "unavailable"
+
+                # Comprehensive container image download logging with provenance metadata
+                logger.info(
+                    f"CONTAINER IMAGE DOWNLOAD: "
+                    f"timestamp={pull_timestamp} | "
+                    f"registry={registry_endpoint} | "
+                    f"repository={repository} | "
+                    f"tag={tag or 'N/A'} | "
+                    f"digest={digest_hash} | "
+                    f"full_digest={actual_digest} | "
+                    f"duration={pull_duration:.1f}s | "
+                    f"status=SUCCESS"
+                )
+                logger.info("Using DIGEST " + actual_digest)
 
             # Log pull duration and warn if excessive
             if pull_duration > 60:  # Warn if pull takes more than 1 minute
@@ -304,14 +354,58 @@ async def docker_runtime(task: Task, folder: Path, file_count_begin: int, task_p
         except docker.errors.APIError as e:  # type: ignore
             # Network/registry connectivity issues - will use cached image
             pull_duration = (datetime.now() - pull_start_time).total_seconds()
+            pull_timestamp = datetime.now().isoformat()
+
+            # Log FAILED download attempt with full provenance
+            logger.warning(
+                f"CONTAINER IMAGE DOWNLOAD: "
+                f"timestamp={pull_timestamp} | "
+                f"registry={registry_endpoint} | "
+                f"repository={repository} | "
+                f"tag={tag or 'N/A'} | "
+                f"digest={digest or 'N/A'} | "
+                f"duration={pull_duration:.1f}s | "
+                f"status=FAILURE | "
+                f"error=APIError | "
+                f"details={str(e)}"
+            )
             logger.warning(f"Registry unavailable for {docker_tag} after {pull_duration:.1f}s, using cached image: {str(e)}")
         except docker.errors.NotFound:  # type: ignore
             # Image doesn't exist in registry (likely local/unpublished image)
             pull_duration = (datetime.now() - pull_start_time).total_seconds()
+            pull_timestamp = datetime.now().isoformat()
+
+            # Log NOT FOUND with provenance
+            logger.info(
+                f"CONTAINER IMAGE DOWNLOAD: "
+                f"timestamp={pull_timestamp} | "
+                f"registry={registry_endpoint} | "
+                f"repository={repository} | "
+                f"tag={tag or 'N/A'} | "
+                f"digest={digest or 'N/A'} | "
+                f"duration={pull_duration:.1f}s | "
+                f"status=NOT_FOUND | "
+                f"note=local_or_unpublished_image"
+            )
             logger.info(f"Image {docker_tag} not found in registry after {pull_duration:.1f}s (this is normal for local/unpublished modules)")
         except Exception as e:
             # Catch-all for other issues
             pull_duration = (datetime.now() - pull_start_time).total_seconds()
+            pull_timestamp = datetime.now().isoformat()
+
+            # Log generic FAILURE with provenance
+            logger.warning(
+                f"CONTAINER IMAGE DOWNLOAD: "
+                f"timestamp={pull_timestamp} | "
+                f"registry={registry_endpoint} | "
+                f"repository={repository} | "
+                f"tag={tag or 'N/A'} | "
+                f"digest={digest or 'N/A'} | "
+                f"duration={pull_duration:.1f}s | "
+                f"status=FAILURE | "
+                f"error={type(e).__name__} | "
+                f"details={str(e)}"
+            )
             logger.info(f"Couldn't check for module update after {pull_duration:.1f}s: {str(e)}")
 
     # Verify container signature if required

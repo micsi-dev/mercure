@@ -147,3 +147,9 @@ dcm_extra_tags
 
 .pytest_cache/
 .aider*
+
+# ignore softlinks
+
+pet_mercure
+rmt_mercure
+rmt_install
