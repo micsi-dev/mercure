@@ -102,7 +102,13 @@ class SubprocessTargetHandler(TargetHandler[TargetTypeVar]):
         if not isinstance(commands[0], list):
             commands = [commands]
         result = ""
-        logger.info(f"Sending {source_folder} to target {dispatch_info.target_name}")
+
+        # Log DICOM send operation with study-level identifiers for audit trail
+        logger.info(f"DICOM SEND: Dispatching to target '{dispatch_info.target_name}' | "
+                   f"UID={task.info.uid} ({task.info.uid_type}) | "
+                   f"MRN={task.info.mrn} | ACC={task.info.acc} | "
+                   f"PatientName={task.info.patient_name or 'N/A'} | "
+                   f"SeriesUID={dispatch_info.series_uid or 'N/A'}")
         for command in commands:
             try:
                 logger.info(f"Running command {' '.join(command)}")

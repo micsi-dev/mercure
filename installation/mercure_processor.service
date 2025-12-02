@@ -12,6 +12,19 @@ ExecStart=/opt/mercure/env/bin/python /opt/mercure/app/processor.py
 Restart=on-failure
 RestartSec=3
 User=mercure
+SupplementaryGroups=docker
+
+# Security hardening (limited - needs Docker access)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/mercure/data /opt/mercure/config /var/run/docker.sock
+ProtectKernelTunables=true
+ProtectKernelModules=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+# Note: Cannot use RestrictNamespaces or ProtectControlGroups - needs Docker access
 
 [Install]
 WantedBy=multi-user.target

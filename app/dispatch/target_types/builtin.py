@@ -92,9 +92,23 @@ class DicomTargetHandler(SubprocessTargetHandler[DicomTarget]):
         result_file = Path(command[-1])
         if result_file.exists():
             parsed_result = parse_dcmsend_result(result_file)
-            logger.info(f"dcmsend result: {parsed_result}")
-            total_instances = parsed_result["summary"].get("sop_instances", 0)
-            success_instances = parsed_result["summary"].get("successful", 0)
+
+            # Extract association and protocol details
+            header = parsed_result.get("header", {})
+            summary = parsed_result.get("summary", {})
+            communication_peer = header.get("communication_peer", "unknown")
+            ae_titles = header.get("ae_titles_used", "unknown")
+            total_instances = summary.get("sop_instances", 0)
+            success_instances = summary.get("successful", 0)
+            error_instances = summary.get("error", 0)
+
+            # Log DICOM protocol outcome with association details
+            logger.info(f"DICOM SEND RESULT: Peer={communication_peer} | "
+                       f"AE_Titles={ae_titles} | "
+                       f"Instances={success_instances}/{total_instances} successful | "
+                       f"Errors={error_instances} | "
+                       f"Status={'SUCCESS' if total_instances == success_instances else 'PARTIAL_FAILURE'}")
+
             if total_instances != success_instances:
                 raise RuntimeError(
                     f"Only {success_instances} out of {total_instances} instances were sent successfully."

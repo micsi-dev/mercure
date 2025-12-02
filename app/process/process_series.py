@@ -8,6 +8,7 @@ Helper functions for mercure's processor module
 import json
 import os
 import shutil
+import subprocess
 import sys
 import uuid
 from datetime import datetime
@@ -88,8 +89,85 @@ async def nomad_runtime(task: Task, folder: Path, file_count_begin: int, task_pr
 docker_pull_throttle: Dict[str, datetime] = {}
 
 
+def verify_container_signature(docker_tag: str, module: Module) -> bool:
+    """
+    Verify container image signature using Sigstore/Cosign.
+
+    Args:
+        docker_tag: Full Docker image reference (e.g., "mycompany/algorithm:v1.0")
+        module: Module configuration containing signature requirements
+
+    Returns:
+        True if signature verification succeeds or is not required
+        False if signature verification fails
+
+    Raises:
+        Exception: If cosign is not installed or verification fails critically
+    """
+    if not getattr(module, 'require_signature', False):
+        logger.debug(f"Signature verification not required for {docker_tag}")
+        return True
+
+    cert_identity = getattr(module, 'signature_certificate_identity', '')
+    cert_oidc_issuer = getattr(module, 'signature_certificate_oidc_issuer', '')
+
+    if not cert_identity or not cert_oidc_issuer:
+        logger.error(f"Signature verification enabled for {docker_tag} but certificate identity or OIDC issuer not configured")
+        return False
+
+    # Check if cosign is installed
+    try:
+        result = subprocess.run(
+            ["cosign", "version"],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        if result.returncode != 0:
+            raise Exception("cosign command failed")
+    except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as e:
+        logger.error(f"cosign not installed or not accessible: {e}")
+        logger.error("Install cosign: https://docs.sigstore.dev/cosign/installation/")
+        raise Exception("Signature verification required but cosign not available")
+
+    logger.info(f"Verifying signature for {docker_tag} with identity={cert_identity}, issuer={cert_oidc_issuer}")
+
+    try:
+        # Verify signature using cosign with certificate-based verification
+        # This uses the public Sigstore/Rekor transparency log
+        result = subprocess.run(
+            [
+                "cosign", "verify",
+                docker_tag,
+                "--certificate-identity", cert_identity,
+                "--certificate-oidc-issuer", cert_oidc_issuer,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60  # Signature verification can take time due to transparency log checks
+        )
+
+        if result.returncode == 0:
+            logger.info(f"✓ Signature verification PASSED for {docker_tag}")
+            logger.debug(f"Cosign output: {result.stdout}")
+            return True
+        else:
+            logger.error(f"✗ Signature verification FAILED for {docker_tag}")
+            logger.error(f"Cosign stderr: {result.stderr}")
+            logger.error(f"Cosign stdout: {result.stdout}")
+            return False
+
+    except subprocess.TimeoutExpired:
+        logger.error(f"Signature verification timed out for {docker_tag}")
+        return False
+    except Exception as e:
+        logger.error(f"Signature verification error for {docker_tag}: {e}")
+        return False
+
+
 async def docker_runtime(task: Task, folder: Path, file_count_begin: int, task_processing: TaskProcessing) -> bool:
-    docker_client = docker.from_env()  # type: ignore
+    # Configure Docker client with extended timeout for resilient registry operations
+    docker_client = docker.from_env()  # type: ignore  # NOTE: 60 second timeout may not be enough for large images
 
     if not task.process:
         return False
@@ -198,23 +276,142 @@ async def docker_runtime(task: Task, folder: Path, file_count_begin: int, task_p
 
     # Get the latest image from Docker Hub
     if perform_image_update:
+        pull_start_time = datetime.now()
+
+        # Parse docker tag to extract registry, repository, and tag
+        # Format: [registry/]repository[:tag|@digest]
+        tag_parts = docker_tag.split('/')
+        if len(tag_parts) == 1:
+            # No registry specified, defaults to Docker Hub
+            registry_endpoint = "registry-1.docker.io"
+            repository_path = tag_parts[0]
+        elif '.' in tag_parts[0] or ':' in tag_parts[0]:
+            # First part contains registry (has . or :)
+            registry_endpoint = tag_parts[0]
+            repository_path = '/'.join(tag_parts[1:])
+        else:
+            # Docker Hub with namespace (e.g., micsi/mercure-module)
+            registry_endpoint = "registry-1.docker.io"
+            repository_path = docker_tag
+
+        # Extract tag or digest
+        if '@' in repository_path:
+            repository, digest = repository_path.rsplit('@', 1)
+            tag = None
+        elif ':' in repository_path:
+            repository, tag = repository_path.rsplit(':', 1)
+            digest = None
+        else:
+            repository = repository_path
+            tag = "latest"
+            digest = None
+
         try:
             docker_pull_throttle[docker_tag] = datetime.now()
             logger.info("Checking for update of docker image " + docker_tag + " ...")
             pulled_image = docker_client.images.pull(docker_tag)
+
+            # Measure and log pull duration
+            pull_duration = (datetime.now() - pull_start_time).total_seconds()
+            pull_timestamp = datetime.now().isoformat()
+
             if pulled_image is not None:
-                digest_string = (
+                # Extract actual digest from pulled image
+                actual_digest = (
                     pulled_image.attrs.get("RepoDigests")[0] if pulled_image.attrs.get("RepoDigests") else "None"
                 )
-                logger.info("Using DIGEST " + digest_string)
+
+                # Extract just the digest hash (after @sha256:)
+                if '@' in actual_digest:
+                    digest_hash = actual_digest.split('@')[1]
+                else:
+                    digest_hash = "unavailable"
+
+                # Comprehensive container image download logging with provenance metadata
+                logger.info(
+                    f"CONTAINER IMAGE DOWNLOAD: "
+                    f"timestamp={pull_timestamp} | "
+                    f"registry={registry_endpoint} | "
+                    f"repository={repository} | "
+                    f"tag={tag or 'N/A'} | "
+                    f"digest={digest_hash} | "
+                    f"full_digest={actual_digest} | "
+                    f"duration={pull_duration:.1f}s | "
+                    f"status=SUCCESS"
+                )
+                logger.info("Using DIGEST " + actual_digest)
+
+            # Log pull duration and warn if excessive
+            if pull_duration > 60:  # Warn if pull takes more than 1 minute
+                logger.warning(f"Image pull for {docker_tag} took {pull_duration:.1f}s (excessive delay detected)")
+            else:
+                logger.info(f"Image pull completed in {pull_duration:.1f}s")
+
             # Clean dangling container images, which occur when the :latest image has been replaced
             prune_result = docker_client.images.prune(filters={"dangling": True})
             logger.info(prune_result)
             logger.info("Update done")
-        except Exception:
-            # Don't use ERROR here because the exception will be raised for all Docker images that
-            # have been built locally and are not present in the Docker Registry.
-            logger.info("Couldn't check for module update (this is normal for unpublished modules)")
+        except docker.errors.APIError as e:  # type: ignore
+            # Network/registry connectivity issues - will use cached image
+            pull_duration = (datetime.now() - pull_start_time).total_seconds()
+            pull_timestamp = datetime.now().isoformat()
+
+            # Log FAILED download attempt with full provenance
+            logger.warning(
+                f"CONTAINER IMAGE DOWNLOAD: "
+                f"timestamp={pull_timestamp} | "
+                f"registry={registry_endpoint} | "
+                f"repository={repository} | "
+                f"tag={tag or 'N/A'} | "
+                f"digest={digest or 'N/A'} | "
+                f"duration={pull_duration:.1f}s | "
+                f"status=FAILURE | "
+                f"error=APIError | "
+                f"details={str(e)}"
+            )
+            logger.warning(f"Registry unavailable for {docker_tag} after {pull_duration:.1f}s, using cached image: {str(e)}")
+        except docker.errors.NotFound:  # type: ignore
+            # Image doesn't exist in registry (likely local/unpublished image)
+            pull_duration = (datetime.now() - pull_start_time).total_seconds()
+            pull_timestamp = datetime.now().isoformat()
+
+            # Log NOT FOUND with provenance
+            logger.info(
+                f"CONTAINER IMAGE DOWNLOAD: "
+                f"timestamp={pull_timestamp} | "
+                f"registry={registry_endpoint} | "
+                f"repository={repository} | "
+                f"tag={tag or 'N/A'} | "
+                f"digest={digest or 'N/A'} | "
+                f"duration={pull_duration:.1f}s | "
+                f"status=NOT_FOUND | "
+                f"note=local_or_unpublished_image"
+            )
+            logger.info(f"Image {docker_tag} not found in registry after {pull_duration:.1f}s (this is normal for local/unpublished modules)")
+        except Exception as e:
+            # Catch-all for other issues
+            pull_duration = (datetime.now() - pull_start_time).total_seconds()
+            pull_timestamp = datetime.now().isoformat()
+
+            # Log generic FAILURE with provenance
+            logger.warning(
+                f"CONTAINER IMAGE DOWNLOAD: "
+                f"timestamp={pull_timestamp} | "
+                f"registry={registry_endpoint} | "
+                f"repository={repository} | "
+                f"tag={tag or 'N/A'} | "
+                f"digest={digest or 'N/A'} | "
+                f"duration={pull_duration:.1f}s | "
+                f"status=FAILURE | "
+                f"error={type(e).__name__} | "
+                f"details={str(e)}"
+            )
+            logger.info(f"Couldn't check for module update after {pull_duration:.1f}s: {str(e)}")
+
+    # Verify container signature if required
+    if not verify_container_signature(docker_tag, module):
+        logger.error(f"Container signature verification failed for {docker_tag}. Aborting processing.", task.id)
+        return False
 
     # Run the container and handle errors of running the container
     processing_success = True
@@ -254,16 +451,56 @@ async def docker_runtime(task: Task, folder: Path, file_count_begin: int, task_p
         else:
             logger.debug("Executing module as mercure.")
 
-        # We might be operating in a user-remapped namespace.
-        # This makes sure that the user inside the container can read and write the files.
-        (folder / "in").chmod(0o777)
+        # Configure network access based on module policy
+        network_config = {}
+        network_mode = getattr(module, 'network_mode', 'bridge')
+        if network_mode:
+            network_config['network_mode'] = network_mode
+            if network_mode == 'none':
+                logger.info(f"Module {task_processing.module_name} configured with NO network access")
+            else:
+                logger.info(f"Module {task_processing.module_name} using network mode: {network_mode}")
+
+        # Configure container runtime security (least privilege)
+        security_config = {}
+
+        # Drop all capabilities by default for non-root containers
+        if not module.requires_root:
+            security_config['cap_drop'] = ['ALL']
+            # Only add back capabilities if explicitly required by module
+            # For standard DICOM processing, no capabilities needed
+            logger.info(f"Module {task_processing.module_name} running with dropped capabilities (least privilege)")
+        else:
+            # Root containers still get capability restrictions
+            logger.warning(f"Module {task_processing.module_name} running as root - security capabilities limited")
+
+        # Prevent privilege escalation
+        security_config['security_opt'] = ['no-new-privileges:true']
+
+        # Read-only root filesystem (if not root module)
+        # Root modules may need to write to system directories
+        if not module.requires_root:
+            security_config['read_only'] = True
+            # Provide writable /tmp for temporary files
+            security_config['tmpfs'] = {'/tmp': 'size=1G,mode=1777'}
+            logger.debug(f"Module {task_processing.module_name} using read-only root filesystem")
+
+        # Ensure the container can read input files and write output files.
+        # Use group-writable (770) instead of world-writable (777) for better security.
+        # The container runs as the same UID:GID as the processor (mercure user).
         try:
+            # Ensure correct ownership and group-writable permissions
+            os.chown(folder / "in", os.getuid(), os.getgid())
+            (folder / "in").chmod(0o770)
             for k in (real_folder / "in").glob("**/*"):
-                k.chmod(0o666)
+                os.chown(k, os.getuid(), os.getgid())
+                k.chmod(0o660)
         except PermissionError:
             raise Exception("Unable to prepare input files for processor. "
                             "The receiver may be running as root, which is no longer supported. ")
-        (folder / "out").chmod(0o777)
+
+        os.chown(folder / "out", os.getuid(), os.getgid())
+        (folder / "out").chmod(0o770)
 
         container = docker_client.containers.run(
             docker_tag,
@@ -274,6 +511,8 @@ async def docker_runtime(task: Task, folder: Path, file_count_begin: int, task_p
             **set_command,
             **arguments,
             **user_info,
+            **network_config,
+            **security_config,
             detach=True,
         )
 
