@@ -25,7 +25,7 @@ import hupper
 from common.constants import mercure_defs
 from routing.common import SeriesItem, generate_task_id
 from routing.route_series import route_error_files, route_series
-from routing.route_studies import route_studies
+from routing.route_studies import route_patients, route_studies
 
 
 @dataclass
@@ -130,6 +130,9 @@ def run_router() -> None:
     # Now, check if studies in the studies folder are ready for routing/processing
     route_studies(r.pending_series)
 
+    # Check if patients in the patients folder are ready for routing/processing
+    route_patients({})
+
 
 def exit_router(args) -> None:
     """
@@ -196,6 +199,7 @@ def main(args=sys.argv[1:]) -> None:
     logger.info(
         f"""Incoming folder: {config.mercure.incoming_folder}
         Studies folder: {config.mercure.studies_folder}
+        Patients folder: {config.mercure.patients_folder}
         Outgoing folder: {config.mercure.outgoing_folder}
         Processing folder: {config.mercure.processing_folder}"""
     )

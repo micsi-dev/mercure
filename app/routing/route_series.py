@@ -277,7 +277,8 @@ def push_series_studylevel(
     """
     # Move series into individual study-level folder for every rule
     for current_rule in triggered_rules:
-        if config.mercure.rules[current_rule].get("action_trigger", "series") == mercure_options.STUDY:
+        action_trigger = config.mercure.rules[current_rule].get("action_trigger", "series")
+        if action_trigger == mercure_options.STUDY or action_trigger == mercure_options.PATIENT:
             first_series = False
 
             # Check if folder exists for buffering series until study completion. If not, create it

@@ -200,6 +200,8 @@ class UnsetRule(TypedDict):
 
 StudyTriggerCondition = Literal["timeout", "received_series"]
 StudyForceCompletionAction = Literal["discard", "proceed", "ignore"]
+PatientTriggerCondition = Literal["timeout", "received_modalities", "received_studies", "received_series"]
+PatientForceCompletionAction = Literal["discard", "proceed", "ignore"]
 
 
 class Rule(BaseModel, Compat):
@@ -211,10 +213,16 @@ class Rule(BaseModel, Compat):
     comment: str = ""
     tags: str = ""
     action: Literal["route", "both", "process", "discard", "notification"] = "route"
-    action_trigger: Literal["series", "study"] = "series"
+    action_trigger: Literal["series", "study", "patient"] = "series"
     study_trigger_condition: StudyTriggerCondition = "timeout"
     study_force_completion_action: StudyForceCompletionAction = "discard"
     study_trigger_series: str = ""
+    patient_trigger_condition: PatientTriggerCondition = "timeout"
+    patient_force_completion_action: PatientForceCompletionAction = "discard"
+    patient_trigger_modalities: str = ""
+    patient_trigger_studies: str = ""
+    patient_trigger_series: str = ""
+    patient_trigger_timeout: int = 7200  # 2 hours default
     priority: Literal["normal", "urgent", "offpeak"] = "normal"
     processing_module: Union[str, List[str]] = ""
     processing_settings: Union[List[Dict[str, Any]], Dict[str, Any]] = {}
@@ -283,6 +291,7 @@ class Config(BaseModel, Compat):
     accept_compressed_images: bool
     incoming_folder: str
     studies_folder: str
+    patients_folder: str
     outgoing_folder: str
     success_folder: str
     error_folder: str
@@ -300,6 +309,8 @@ class Config(BaseModel, Compat):
     series_complete_trigger: int    # in seconds
     study_complete_trigger: int     # in seconds
     study_forcecomplete_trigger: int  # in seconds
+    patient_complete_trigger: int   # in seconds (2 hours)
+    patient_forcecomplete_trigger: int  # in seconds (24 hours)
     dicom_receiver: DicomReceiverConfig = DicomReceiverConfig()
     graphite_ip: str
     graphite_port: int
@@ -331,7 +342,7 @@ class Config(BaseModel, Compat):
 class TaskInfo(BaseModel, Compat):
     action: Literal["route", "both", "process", "discard", "notification"]
     uid: str
-    uid_type: Literal["series", "study"]
+    uid_type: Literal["series", "study", "patient"]
     triggered_rules: Union[Dict[str, Literal[True]], str]
     applied_rule: Optional[str]
     patient_name: Optional[str]
@@ -370,6 +381,29 @@ class TaskStudy(BaseModel, Compat):
     received_series_uid: Optional[List[str]]
     complete_force: bool = False
     complete_force_action: Optional[StudyForceCompletionAction] = "discard"
+
+
+class TaskPatientStudy(BaseModel, Compat):
+    study_uid: str
+    modality: str
+    series_count: int
+    series_uids: List[str]
+    received_time: str
+
+
+class TaskPatient(BaseModel, Compat):
+    patient_id: str
+    complete_trigger: Optional[PatientTriggerCondition]
+    complete_required_modalities: str
+    complete_required_studies: str
+    complete_required_series: str
+    creation_time: str
+    last_receive_time: str
+    received_studies: Optional[List[TaskPatientStudy]]
+    received_modalities: Optional[List[str]]
+    received_series: Optional[List[str]]
+    complete_force: bool = False
+    complete_force_action: Optional[PatientForceCompletionAction] = "discard"
 
 
 class TaskProcessing(BaseModel, Compat):
@@ -411,6 +445,7 @@ class Task(BaseModel, Compat):
     dispatch: Union[TaskDispatch, EmptyDict] = cast(EmptyDict, {})
     process: Union[TaskProcessing, EmptyDict, List[TaskProcessing]] = cast(EmptyDict, {})
     study: Union[TaskStudy, EmptyDict] = cast(EmptyDict, {})
+    patient: Union[TaskPatient, EmptyDict] = cast(EmptyDict, {})
     nomad_info: Optional[Any]
 
     class Config:
@@ -433,5 +468,9 @@ class Task(BaseModel, Compat):
                 json.dump(self.dict(), f)
 
 
-class TaskHasStudy(Task): 
+class TaskHasStudy(Task):
     study: TaskStudy
+
+
+class TaskHasPatient(Task):
+    patient: TaskPatient

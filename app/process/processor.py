@@ -152,7 +152,8 @@ async def search_folder(counter) -> bool:
             push_input_images(task.id, in_folder, out_folder)
 
         # Remember the number of DCM files in the output folder (for logging purpose)
-        file_count_complete = len(list(Path(out_folder).glob(mercure_names.DCMFILTER)))
+        # Use rglob to recursively count files at any level
+        file_count_complete = len(list(Path(out_folder).rglob(mercure_names.DCMFILTER)))
         handle_processor_output(task, task_processing, 0, p_folder)
 
         # If the only file is task.json, the processing failed

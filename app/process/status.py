@@ -15,10 +15,12 @@ def is_ready_for_processing(folder) -> bool:
     """Checks if a case in the processing folder is ready for the processor."""
     try:
         path = Path(folder)
+        # Check for DICOM files at any level (root or subdirectories for patient-level tasks)
+        has_dicom_files = len(list(path.rglob("*.dcm"))) > 0
         folder_status = (
             not (path / mercure_names.LOCK).exists()
             and not (path / mercure_names.PROCESSING).exists()
-            and len(list(path.glob("*.dcm"))) > 0
+            and has_dicom_files
         )
         return folder_status
     except Exception:

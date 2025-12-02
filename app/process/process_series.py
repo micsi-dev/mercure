@@ -653,7 +653,8 @@ async def process_series(folder: Path) -> None:
             needs_dispatching = True
 
         # Remember the number of incoming DCM files (for logging purpose)
-        file_count_begin = len(list(folder.glob(mercure_names.DCMFILTER)))
+        # Use rglob for robustness (patient-level tasks are flattened before reaching here)
+        file_count_begin = len(list(folder.rglob(mercure_names.DCMFILTER)))
 
         (folder / "in").mkdir()
         for child in folder.iterdir():
@@ -759,7 +760,8 @@ async def process_series(folder: Path) -> None:
                     and (task.process[0] if isinstance(task.process, list) else task.process).retain_input_images is True):
                 push_input_images(task_id, folder / "in", folder / "out")
             # Remember the number of DCM files in the output folder (for logging purpose)
-            file_count_complete = len(list((folder / "out").glob(mercure_names.DCMFILTER)))
+            # Use rglob to recursively count files at any level
+            file_count_complete = len(list((folder / "out").rglob(mercure_names.DCMFILTER)))
 
             # Push the results either to the success or error folder
             move_results(task_id, folder, lock, processing_success, needs_dispatching)
