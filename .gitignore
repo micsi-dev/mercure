@@ -148,8 +148,8 @@ dcm_extra_tags
 .pytest_cache/
 .aider*
 
-# ignore softlinks
+# ignore tls credentials for orthanc
+addons/orthanc/tls
 
-pet_mercure
-rmt_mercure
-rmt_install
+# ignore softlink to orthanc version (tls or notls)
+addons/orthanc/orthanc.json
