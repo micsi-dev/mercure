@@ -75,4 +75,3 @@ rq-scheduler ~= 0.13.1
 httpx
 bleach ~= 6.2.0
 types-bleach
-sigstore
