@@ -503,7 +503,7 @@ async def docker_runtime(task: Task, folder: Path, file_count_begin: int, task_p
             # Provide writable /tmp for temporary files
             # security_config['tmpfs'] = {'/tmp': 'size=1G,mode=1777'}
             security_config['tmpfs'] = {
-                '/tmp': 'size=1G,mode=1777',
+                '/tmp': 'size=10G,mode=1777',
                 '/app/logs': 'size=100M,mode=1777',
                 '/var/cache/fontconfig': 'size=50M,mode=1777',
             }
