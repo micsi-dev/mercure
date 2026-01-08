@@ -189,9 +189,6 @@ class Module(BaseModel, Compat):
     requires_persistence: Optional[bool] = False
     persistence_folder_name: Optional[str] = ""
     network_mode: Optional[str] = "bridge"  # "none", "bridge", or custom network name
-    require_signature: Optional[bool] = False  # Require Sigstore/Cosign signature verification
-    signature_certificate_identity: Optional[str] = ""  # Expected certificate identity (email/URL)
-    signature_certificate_oidc_issuer: Optional[str] = ""  # Expected OIDC issuer (e.g., https://github.com/login/oauth)
 
 
 class UnsetRule(TypedDict):
