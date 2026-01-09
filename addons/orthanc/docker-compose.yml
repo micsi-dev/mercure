@@ -10,6 +10,7 @@ services:
       - ORTHANC_NAME=HelloWorld
     volumes:
       - db:/var/lib/orthanc/db/
+      - ./tls:/etc/orthanc/tls
     restart: always
     ports:
       - 8042:8042

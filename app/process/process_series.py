@@ -8,7 +8,6 @@ Helper functions for mercure's processor module
 import json
 import os
 import shutil
-import subprocess
 import sys
 import uuid
 from datetime import datetime
@@ -104,65 +103,85 @@ def verify_container_signature(docker_tag: str, module: Module) -> bool:
     Raises:
         Exception: If cosign is not installed or verification fails critically
     """
-    if not getattr(module, 'require_signature', False):
-        logger.debug(f"Signature verification not required for {docker_tag}")
+    settings = module.settings
+
+    if settings:
+        cert_identity = settings.get('signature_certificate_identity', '')
+        cert_oidc_issuer = settings.get('signature_certificate_oidc_issuer', '')
+    else:
+        cert_identity = ''
+        cert_oidc_issuer = ''
+
+    require_signature = settings.get('require_signature', False)
+
+    if require_signature == '0' or require_signature == 'false' or require_signature == 'False':
+        require_signature = False
+    else:
+        require_signature = True
+
+    if not require_signature:
+        logger.info(f"Signature verification not required for {docker_tag}")
         return True
 
-    cert_identity = getattr(module, 'signature_certificate_identity', '')
-    cert_oidc_issuer = getattr(module, 'signature_certificate_oidc_issuer', '')
-
     if not cert_identity or not cert_oidc_issuer:
-        logger.error(f"Signature verification enabled for {docker_tag} but certificate identity or OIDC issuer not configured")
+        logger.info(f"Signature verification enabled for {docker_tag} but certificate identity or OIDC issuer not configured")
         return False
-
-    # Check if cosign is installed
-    try:
-        result = subprocess.run(
-            ["cosign", "version"],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
-        if result.returncode != 0:
-            raise Exception("cosign command failed")
-    except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as e:
-        logger.error(f"cosign not installed or not accessible: {e}")
-        logger.error("Install cosign: https://docs.sigstore.dev/cosign/installation/")
-        raise Exception("Signature verification required but cosign not available")
 
     logger.info(f"Verifying signature for {docker_tag} with identity={cert_identity}, issuer={cert_oidc_issuer}")
 
+    # Use containerized cosign to avoid requiring local installation
+    cosign_image = "chainguard/cosign:latest"
+    container = None
+
     try:
-        # Verify signature using cosign with certificate-based verification
-        # This uses the public Sigstore/Rekor transparency log
-        result = subprocess.run(
-            [
-                "cosign", "verify",
+        docker_client = docker.from_env()
+
+        # Pull cosign image (small image, pull every time to ensure latest)
+        try:
+            docker_client.images.pull(cosign_image)
+        except docker.errors.APIError as e:
+            logger.warning(f"Could not pull {cosign_image}, using cached if available: {e}")
+
+        # Run cosign verify in container
+        # No Docker socket mount needed - cosign verifies against registry directly
+        # No ~/.cosign mount needed - using keyless OIDC verification via public Sigstore infrastructure
+        container = docker_client.containers.run(
+            cosign_image,
+            command=[
+                "verify",
                 docker_tag,
                 "--certificate-identity", cert_identity,
                 "--certificate-oidc-issuer", cert_oidc_issuer,
             ],
-            capture_output=True,
-            text=True,
-            timeout=60  # Signature verification can take time due to transparency log checks
+            remove=False,  # Keep container to retrieve logs on failure
+            detach=True,
         )
 
-        if result.returncode == 0:
+        # Wait for verification with timeout (transparency log checks can be slow)
+        result = container.wait(timeout=60)
+        logs = container.logs().decode('utf-8')
+
+        if result['StatusCode'] == 0:
             logger.info(f"✓ Signature verification PASSED for {docker_tag}")
-            logger.debug(f"Cosign output: {result.stdout}")
+            logger.debug(f"Cosign output: {logs}")
             return True
         else:
             logger.error(f"✗ Signature verification FAILED for {docker_tag}")
-            logger.error(f"Cosign stderr: {result.stderr}")
-            logger.error(f"Cosign stdout: {result.stdout}")
+            logger.error(f"Cosign output: {logs}")
             return False
 
-    except subprocess.TimeoutExpired:
-        logger.error(f"Signature verification timed out for {docker_tag}")
-        return False
+    except docker.errors.NotFound:
+        logger.error(f"Cosign image {cosign_image} not found and could not be pulled")
+        raise Exception("Signature verification required but cosign image not available")
     except Exception as e:
         logger.error(f"Signature verification error for {docker_tag}: {e}")
         return False
+    finally:
+        if container:
+            try:
+                container.remove()
+            except Exception:
+                pass  # Best effort cleanup
 
 
 async def docker_runtime(task: Task, folder: Path, file_count_begin: int, task_processing: TaskProcessing) -> bool:
@@ -482,7 +501,12 @@ async def docker_runtime(task: Task, folder: Path, file_count_begin: int, task_p
         if not module.requires_root:
             security_config['read_only'] = True
             # Provide writable /tmp for temporary files
-            security_config['tmpfs'] = {'/tmp': 'size=1G,mode=1777'}
+            # security_config['tmpfs'] = {'/tmp': 'size=1G,mode=1777'}
+            security_config['tmpfs'] = {
+                '/tmp': 'size=10G,mode=1777',
+                '/app/logs': 'size=100M,mode=1777',
+                '/var/cache/fontconfig': 'size=50M,mode=1777',
+            }
             logger.debug(f"Module {task_processing.module_name} using read-only root filesystem")
 
         # Ensure the container can read input files and write output files.
