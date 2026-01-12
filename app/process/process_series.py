@@ -108,13 +108,13 @@ def verify_container_signature(docker_tag: str, module: Module) -> bool:
     if settings:
         cert_identity = settings.get('signature_certificate_identity', '')
         cert_oidc_issuer = settings.get('signature_certificate_oidc_issuer', '')
+        require_signature = settings.get('require_signature', False)
     else:
         cert_identity = ''
         cert_oidc_issuer = ''
+        require_signature = False
 
-    require_signature = settings.get('require_signature', False)
-
-    if require_signature == '0' or require_signature == 'false' or require_signature == 'False':
+    if require_signature == '0' or require_signature == 'false' or require_signature == 'False' or not require_signature:
         require_signature = False
     else:
         require_signature = True
