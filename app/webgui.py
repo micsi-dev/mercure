@@ -306,18 +306,29 @@ async def delete_old_tests() -> Response:
         if datetime.datetime.strptime(t["time_begin"], "%Y-%m-%d %H:%M:%S")
         < datetime.datetime.now() - datetime.timedelta(hours=1)
     ]
+    
+    # Only read and potentially save config if there are old tests to clean up
+    if not old_tests:
+        return PlainTextResponse("OK")
+    
     config.read_config()
+    changes_made = False
     for i in old_tests:
         if (t := f"{i}_self_test_target") in config.mercure.targets:
             del config.mercure.targets[t]
+            changes_made = True
         if (t := f"{i}_self_test_module") in config.mercure.modules:
             del config.mercure.modules[t]
+            changes_made = True
         if (t := f"{i}_self_test_rule_begin") in config.mercure.rules:
             del config.mercure.rules[t]
+            changes_made = True
         if (t := f"{i}_self_test_rule_end") in config.mercure.rules:
             del config.mercure.rules[t]
+            changes_made = True
 
-    config.save_config()
+    if changes_made:
+        config.save_config()
 
     return PlainTextResponse("OK")
 

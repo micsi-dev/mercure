@@ -9,10 +9,10 @@ import typing
 from io import TextIOWrapper
 from os import PathLike
 # Standard python includes
-from typing import Any, Dict, List, Optional, Type, Union, cast
+from typing import Annotated, Any, Dict, List, Optional, Type, Union, cast
 
 from common.event_types import FailStage
-from pydantic import BaseModel
+from pydantic import BaseModel, Discriminator
 from typing_extensions import Literal, TypedDict
 
 # TODO: Add description for the individual classes
@@ -175,6 +175,12 @@ class DummyTarget(Target):
     target_type: Literal["dummy"] = "dummy"
 
 
+# Pydantic v2 discriminated union for target type validation
+TargetUnion = Annotated[
+    Union[DicomTarget, DicomTLSTarget, DicomWebTarget, SftpTarget, RsyncTarget, XnatTarget, S3Target, FolderTarget, DummyTarget],
+    Discriminator("target_type")
+]
+
 class Module(BaseModel, Compat):
     docker_tag: Optional[str] = ""
     additional_volumes: Optional[str] = ""
@@ -321,7 +327,7 @@ class Config(BaseModel, Compat):
     bookkeeper: str
     offpeak_start: str
     offpeak_end: str
-    targets: Dict[str, Target]
+    targets: Dict[str, TargetUnion]
     rules: Dict[str, Rule]
     modules: Dict[str, Module]
     process_runner: Literal["docker", "nomad", ""] = ""
