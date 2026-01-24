@@ -387,6 +387,49 @@ async def store_processor_output(request) -> JSONResponse:
     return JSONResponse({"ok": ""})
 
 
+@router.delete("/delete-task/{task_id}")
+@requires("authenticated")
+async def delete_task(request) -> JSONResponse:
+    """Delete a task and all related records from the database.
+
+    Deletes in order to respect foreign key constraints:
+    1. processor_outputs (references tasks)
+    2. processor_logs (references tasks)
+    3. task_events (references tasks)
+    4. child tasks (parent_id references tasks)
+    5. parent task
+    """
+    task_id = request.path_params["task_id"]
+
+    try:
+        # Delete processor outputs for this task
+        query = db.processor_outputs_table.delete().where(db.processor_outputs_table.c.task_id == task_id)
+        await db.database.execute(query)
+
+        # Delete processor logs for this task
+        query = db.processor_logs_table.delete().where(db.processor_logs_table.c.task_id == task_id)
+        await db.database.execute(query)
+
+        # Delete task events for this task
+        query = db.task_events.delete().where(db.task_events.c.task_id == task_id)
+        await db.database.execute(query)
+
+        # Delete any child tasks (tasks that have this task as parent)
+        query = db.tasks_table.delete().where(db.tasks_table.c.parent_id == task_id)
+        await db.database.execute(query)
+
+        # Delete the task itself
+        query = db.tasks_table.delete().where(db.tasks_table.c.id == task_id)
+        result = await db.database.execute(query)
+
+        logger.info(f"Deleted task {task_id} and all related records")
+        return JSONResponse({"ok": "", "deleted": task_id})
+
+    except Exception as e:
+        logger.exception(f"Error deleting task {task_id}: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 ###################################################################################
 # Main entry function
 ###################################################################################

@@ -341,6 +341,59 @@ async def show_jobs_fail(request):
     return JSONResponse(sorted_jobs)
 
 
+@router.get("/jobs/success")
+@requires("authenticated", redirect="login")
+async def show_jobs_success(request):
+    try:
+        config.read_config()
+    except Exception:
+        return PlainTextResponse("Configuration is being updated. Try again in a minute.")
+
+    job_list: Dict = {}
+
+    for entry in os.scandir(config.mercure.success_folder):
+        if not entry.is_dir():
+            continue
+        job_name: str = entry.name
+        timestamp: float = entry.stat().st_mtime
+        job_acc: str = ""
+        job_mrn: str = ""
+        job_scope: str = "Series"
+        job_rule: str = "Unknown"
+
+        task_file = Path(entry.path) / mercure_names.TASKFILE
+        if not task_file.exists():
+            task_file = Path(entry.path) / "in" / mercure_names.TASKFILE
+
+        try:
+            task = Task.from_file(task_file)
+            job_acc = task.info.acc
+            job_mrn = task.info.mrn
+            if task.info.uid_type == "series":
+                job_scope = "Series"
+            else:
+                job_scope = "Study"
+            job_rule = task.info.applied_rule or "Unknown"
+
+        except Exception as e:
+            logger.exception(e)
+            job_acc = "Error"
+            job_mrn = "Error"
+            job_scope = "Error"
+
+        job_list[job_name] = {
+            "ACC": job_acc,
+            "MRN": job_mrn,
+            "Scope": job_scope,
+            "Rule": job_rule,
+            "CompletedTime": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(timestamp)),
+        }
+    sorted_jobs = collections.OrderedDict(sorted(job_list.items(),  # type: ignore
+                                                 key=lambda x: x[1]["CompletedTime"],  # type: ignore
+                                                 reverse=True))  # type: ignore
+    return JSONResponse(sorted_jobs)
+
+
 @router.get("/status")
 @requires("authenticated", redirect="login")
 async def show_queues_status(request):
@@ -728,6 +781,255 @@ def get_fail_stage(taskfile_folder: Path) -> str:
         return "Unknown"
 
     return "Dispatching"
+
+
+@router.post("/jobs/fail/reprocess-with-settings")
+@requires("authenticated", redirect="login")
+async def reprocess_with_settings(request):
+    """Reprocess a failed task with new module settings.
+
+    Parameters:
+        task_id: The ID of the failed task to reprocess
+        use_current_settings: If true, use the current rule/module configuration
+        module_settings: JSON string with custom module settings (if use_current_settings is false)
+    """
+    try:
+        config.read_config()
+    except Exception:
+        return PlainTextResponse("Configuration is being updated. Try again in a minute.")
+
+    form = await request.form()
+    task_id = form.get("task_id")
+    use_current_settings = form.get("use_current_settings", "true").lower() == "true"
+    module_settings_str = form.get("module_settings", "{}")
+
+    if not task_id:
+        return JSONResponse({"error": "No task ID provided"}, status_code=400)
+
+    # Find the task in the error folder
+    task_folder = Path(config.mercure.error_folder) / task_id
+    if not task_folder.exists():
+        return JSONResponse({"error": "Task not found in error folder"}, status_code=404)
+
+    # Check for as_received folder
+    as_received_folder = task_folder / "as_received"
+    if not as_received_folder.exists():
+        return JSONResponse({"error": "No original files found for this task"}, status_code=404)
+
+    # Find the task file
+    task_file = task_folder / mercure_names.TASKFILE
+    if not task_file.exists():
+        task_file = task_folder / "in" / mercure_names.TASKFILE
+    if not task_file.exists():
+        task_file = task_folder / "as_received" / mercure_names.TASKFILE
+
+    if not task_file.exists():
+        return JSONResponse({"error": "Task file not found"}, status_code=404)
+
+    try:
+        task = Task.from_file(task_file)
+
+        if not task.info.applied_rule:
+            return JSONResponse({"error": "Task does not have an applied rule"}, status_code=400)
+
+        if task.info.applied_rule not in config.mercure.rules.keys():
+            return JSONResponse({"error": f"Rule '{task.info.applied_rule}' not found in current configuration"}, status_code=400)
+
+        rule = config.mercure.rules[task.info.applied_rule]
+        if rule.action not in ("both", "process"):
+            return JSONResponse({"error": "This rule does not perform processing"}, status_code=400)
+
+        # Create new processing folder
+        processing_folder = Path(config.mercure.processing_folder) / task_id
+        if processing_folder.exists():
+            return JSONResponse({"error": "Task is currently being processed"}, status_code=409)
+
+        try:
+            processing_folder.mkdir(exist_ok=False)
+        except Exception:
+            return JSONResponse({"error": "Could not create processing folder"}, status_code=500)
+
+        try:
+            lock = FileLock(processing_folder / mercure_names.LOCK)
+        except Exception:
+            shutil.rmtree(processing_folder)
+            return JSONResponse({"error": "Could not create lock file"}, status_code=500)
+
+        try:
+            # Copy the as_received files to the processing folder
+            for file_path in as_received_folder.glob("*"):
+                if file_path.is_file():
+                    shutil.copy2(file_path, processing_folder / file_path.name)
+
+            # Clear the fail_stage
+            task.info.fail_stage = None
+
+            # Generate new processing configuration
+            if use_current_settings:
+                # Use current rule configuration
+                task.process = generate_taskfile.add_processing(task.info.applied_rule) or cast(EmptyDict, {})
+            else:
+                # Parse custom settings and merge with generated config
+                try:
+                    custom_settings = json.loads(module_settings_str)
+                except json.JSONDecodeError:
+                    lock.free()
+                    shutil.rmtree(processing_folder)
+                    return JSONResponse({"error": "Invalid JSON in module settings"}, status_code=400)
+
+                # Generate base processing config
+                task.process = generate_taskfile.add_processing(task.info.applied_rule) or cast(EmptyDict, {})
+
+                # Merge custom settings into the process configuration
+                if task.process and isinstance(task.process, list):
+                    for proc in task.process:
+                        if hasattr(proc, 'settings') and proc.settings:
+                            proc.settings.update(custom_settings)
+                        else:
+                            proc.settings = custom_settings
+                elif task.process and hasattr(task.process, 'settings'):
+                    if task.process.settings:
+                        task.process.settings.update(custom_settings)
+                    else:
+                        task.process.settings = custom_settings
+
+            if task.process is None:
+                lock.free()
+                shutil.rmtree(processing_folder)
+                return JSONResponse({"error": "Failed to generate processing configuration"}, status_code=500)
+
+            # Write the updated task file
+            task.to_file(processing_folder / mercure_names.TASKFILE)
+
+            # Log the action
+            settings_type = "current rule settings" if use_current_settings else "custom settings"
+            logger.info(f"Reprocessing task {task_id} with {settings_type}")
+            monitor.send_task_event(
+                monitor.task_event.PROCESS_RESTART, task_id, 0, "",
+                f"Reprocessing task with {settings_type}"
+            )
+
+            # Remove the old error folder
+            try:
+                shutil.rmtree(task_folder)
+            except Exception:
+                logger.warning(f"Could not remove error folder for task {task_id}")
+
+            lock.free()
+            return JSONResponse({
+                "success": True,
+                "message": f"Task {task_id} has been queued for reprocessing with {settings_type}"
+            })
+
+        except Exception as e:
+            lock.free()
+            shutil.rmtree(processing_folder)
+            raise
+
+    except Exception as e:
+        logger.exception(f"Error reprocessing task: {str(e)}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@router.delete("/jobs/archive/{task_id}")
+@requires("authenticated", redirect="login")
+async def delete_archive_job(request):
+    """Delete a task from the archive (database and filesystem if present)."""
+    task_id = request.path_params["task_id"]
+
+    try:
+        # Delete from bookkeeper database
+        result = await monitor.delete_task(task_id)
+        if result and "error" in result:
+            return JSONResponse({"error": result["error"]}, status_code=400)
+
+        # Also try to delete files from success/error folders if they exist
+        try:
+            config.read_config()
+            for folder in [config.mercure.success_folder, config.mercure.error_folder]:
+                task_path = Path(folder) / task_id
+                if task_path.exists():
+                    shutil.rmtree(task_path)
+                    logger.info(f"Deleted archive job folder: {task_path}")
+        except Exception as fs_error:
+            logger.warning(f"Could not delete filesystem folder for {task_id}: {fs_error}")
+
+        return JSONResponse({"success": True, "deleted": task_id})
+
+    except Exception as e:
+        logger.exception(f"Error deleting archive job {task_id}: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@router.delete("/jobs/{category}/{task_id}")
+@requires("authenticated", redirect="login")
+async def delete_job(request):
+    """Delete a job from the queue and clean up filesystem and database.
+
+    Categories: processing, routing, studies, failure
+    """
+    try:
+        config.read_config()
+    except Exception:
+        return PlainTextResponse("Configuration is being updated. Try again in a minute.")
+
+    category = request.path_params["category"]
+    task_id = request.path_params["task_id"]
+
+    # Map category to folder
+    folder_map = {
+        "processing": config.mercure.processing_folder,
+        "routing": config.mercure.outgoing_folder,
+        "studies": config.mercure.studies_folder,
+        "failure": config.mercure.error_folder,
+        "success": config.mercure.success_folder,
+    }
+
+    if category not in folder_map:
+        return JSONResponse({"error": f"Invalid category: {category}"}, status_code=400)
+
+    job_path = Path(folder_map[category]) / task_id
+    force = request.query_params.get("force", "").lower() == "true"
+
+    if not job_path.exists():
+        return JSONResponse({"error": "Job not found"}, status_code=404)
+
+    # Check for locks or processing status before deletion
+    lock_file = job_path / mercure_names.LOCK
+    processing_file = job_path / mercure_names.PROCESSING
+
+    if lock_file.exists() and not force:
+        return JSONResponse({"error": "Job is locked and cannot be deleted"}, status_code=409)
+
+    if processing_file.exists() and not force:
+        # Check if the processing marker is stale (older than 5 minutes with no active container)
+        try:
+            import time
+            marker_age = time.time() - processing_file.stat().st_mtime
+            if marker_age > 300:  # 5 minutes
+                logger.warning(f"Stale .processing marker detected for {task_id} (age: {marker_age:.0f}s). Use force=true to delete.")
+        except Exception:
+            pass
+        return JSONResponse({"error": "Job is currently being processed. Use force=true to delete stale jobs."}, status_code=409)
+
+    try:
+        # Delete the filesystem folder
+        shutil.rmtree(job_path)
+        logger.info(f"Deleted job folder: {job_path}")
+
+        # Delete from bookkeeper database
+        try:
+            result = await monitor.delete_task(task_id)
+            if result and "error" in result:
+                logger.warning(f"Could not delete task from database: {result['error']}")
+        except Exception as db_error:
+            logger.warning(f"Could not delete task from database: {db_error}")
+
+        return JSONResponse({"success": True, "deleted": task_id})
+
+    except Exception as e:
+        logger.exception(f"Error deleting job {task_id}: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 
 queue_app = Starlette(routes=router)

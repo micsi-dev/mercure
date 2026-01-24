@@ -42,3 +42,4 @@ VOLUME /opt/mercure/data
 USER mercure
 ENV DEBUG=False
 ENV MERCURE_CONFIG_FOLDER=/opt/mercure/config
+ENV PYTHONUNBUFFERED=1

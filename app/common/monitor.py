@@ -276,3 +276,37 @@ async def task_process_results(task_id="") -> Any:
 
 async def get_task_info(task_id="") -> Any:
     return await get("query/get_task_info", {"task_id": task_id})
+
+
+async def async_delete(endpoint: str, **kwargs) -> Any:
+    """Performs a DELETE request to the bookkeeper."""
+    if api_key is None:
+        return None
+
+    if not bookkeeper_address:
+        return None
+
+    try:
+        async with aiohttp.ClientSession(
+            headers={"Authorization": f"Token {api_key}"},
+            timeout=aiohttp.ClientTimeout(total=None, connect=120, sock_connect=120, sock_read=120)
+        ) as session:
+            async with session.delete(bookkeeper_address + "/" + endpoint, **kwargs) as resp:
+                logger.debug(f"Response from DELETE {endpoint}: {resp.status}")
+                if resp.status != 200:
+                    logger.warning(
+                        f"Failed DELETE request to bookkeeper endpoint {endpoint}: status: {resp.status}"
+                    )
+                    return {"error": f"Failed with status {resp.status}"}
+                return await resp.json()
+    except aiohttp.client.ClientError as e:
+        logger.error(f"Failed DELETE request to {bookkeeper_address}/{endpoint}: {e}")
+        return {"error": str(e)}
+    except asyncio.TimeoutError as e:
+        logger.error(f"Failed DELETE request to {bookkeeper_address}/{endpoint} with timeout: {e}")
+        return {"error": "Request timeout"}
+
+
+async def delete_task(task_id: str) -> Any:
+    """Delete a task and all its related records from the bookkeeper database."""
+    return await async_delete(f"delete-task/{task_id}")

@@ -237,8 +237,10 @@ async def docker_runtime(task: Task, folder: Path, file_count_begin: int, task_p
     mercure_environment = dict(MERCURE_IN_DIR=container_in_dir, MERCURE_OUT_DIR=container_out_dir)
     monai_environment = dict(MONAI_INPUTPATH=container_in_dir, MONAI_OUTPUTPATH=container_out_dir,
                              HOLOSCAN_INPUT_PATH=container_in_dir, HOLOSCAN_OUTPUT_PATH=container_out_dir)
+    # Force unbuffered Python output for real-time log streaming
+    unbuffered_environment = dict(PYTHONUNBUFFERED="1")
 
-    environment = {**module_environment, **mercure_environment, **monai_environment}
+    environment = {**module_environment, **mercure_environment, **monai_environment, **unbuffered_environment}
     arguments = decode_task_json(module.docker_arguments)
 
     lock_id = str(uuid.uuid1())
@@ -540,20 +542,39 @@ async def docker_runtime(task: Task, folder: Path, file_count_begin: int, task_p
             detach=True,
         )
 
-        # Wait for end of container execution
+        # Stream logs in real-time to a file for live viewing
+        live_log_file = folder / "process.log"
+        collected_logs = []
+        logger.info("=== MODULE OUTPUT - BEGIN (streaming) ========================================")
+        try:
+            with open(live_log_file, "w", encoding="utf-8") as log_file:
+                for log_chunk in container.logs(stream=True, follow=True, timestamps=True):
+                    line = log_chunk.decode("utf-8")
+                    localized_line = helper.localize_log_timestamps(line, config)
+                    collected_logs.append(localized_line)
+                    # Write to file immediately for real-time access
+                    log_file.write(localized_line)
+                    log_file.flush()
+                    # Also log to mercure logger
+                    logger.info(localized_line.rstrip())
+        except Exception as e:
+            logger.warning(f"Error streaming logs: {e}")
+
+        # Get container exit status
         docker_result = container.wait()
         logger.info(docker_result)
-
-        # Print the log out of the module
-        logger.info("=== MODULE OUTPUT - BEGIN ========================================")
-        if container.logs() is not None:
-            logs = container.logs(timestamps=True).decode("utf-8")
-            logs = helper.localize_log_timestamps(logs, config)
-            if not config.mercure.processing_logs.discard_logs:
-                monitor.send_process_logs(task.id, task_processing.module_name, logs)
-
-            logger.info(logs)
         logger.info("=== MODULE OUTPUT - END ==========================================")
+
+        # Send final logs to bookkeeper
+        logs = "".join(collected_logs)
+        if logs and not config.mercure.processing_logs.discard_logs:
+            monitor.send_process_logs(task.id, task_processing.module_name, logs)
+
+        # Clean up live log file
+        try:
+            live_log_file.unlink(missing_ok=True)
+        except Exception:
+            pass
 
         # In lieu of making mercure a sudoer...
         logger.debug("Changing the ownership of the output directory...")

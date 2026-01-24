@@ -12,6 +12,23 @@ from common import event_types, helper, monitor
 setup_complete = False
 
 
+class FlushingStream:
+    """A stream wrapper that flushes after every write for real-time log output."""
+
+    def __init__(self, stream):
+        self.stream = stream
+
+    def write(self, data):
+        self.stream.write(data)
+        self.stream.flush()
+
+    def flush(self):
+        self.stream.flush()
+
+    def __getattr__(self, name):
+        return getattr(self.stream, name)
+
+
 class BookkeeperHandler(logging.Handler):
     def __init__(self, level=logging.WARNING) -> None:
         super().__init__(level)
@@ -120,6 +137,7 @@ def get_logger() -> ExceptionsKeywordArgumentAdapter:
             get_loglevel(),
             outputs=(
                 daiquiri.output.Stream(
+                    stream=FlushingStream(sys.stderr),
                     formatter=daiquiri.formatter.ColorExtrasFormatter(
                         fmt=get_logformat(), keywords={"event_type", "severity", "context_task"}
                     )

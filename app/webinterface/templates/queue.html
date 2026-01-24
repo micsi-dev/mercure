@@ -4,9 +4,11 @@
 
 {% block extra_head %}
     <script nonce="{{ csp_nonce }}" type="text/javascript" src="{{ url_for('static', path='DataTables/datatables.min.js') }}"></script>
-    <link rel="stylesheet" type="text/css" href="{{ url_for('static', path='DataTables/datatables.min.css') }}"/>  
+    <link rel="stylesheet" type="text/css" href="{{ url_for('static', path='DataTables/datatables.min.css') }}"/>
     <script nonce="{{ csp_nonce }}" type="text/javascript" src="{{ url_for('static', path='js/jquery.json-viewer.js') }}"></script>
-    <link rel="stylesheet" type="text/css" href="{{ url_for('static', path='css/jquery.json-viewer.css') }}"/>  
+    <link rel="stylesheet" type="text/css" href="{{ url_for('static', path='css/jquery.json-viewer.css') }}"/>
+    <!-- Advanced DICOM Viewer -->
+    <script nonce="{{ csp_nonce }}" type="text/javascript" src="{{ url_for('static', path='js/advanced-dicom-viewer.js') }}"></script>
 {% endblock %}
 
 {% block content %}
@@ -116,6 +118,12 @@
                             <span>Failure</span>
                         </a>
                     </li>
+                    <li data-tab="success" id="tab_success">
+                        <a>
+                            <span class="icon"><i class="fas fa-check-circle"></i></span>
+                            <span>Success</span>
+                        </a>
+                    </li>
                     <li data-tab="archive" id="tab_archive">
                         <a>
                             <span class="icon"><i class="fas fa-archive"></i></span>
@@ -185,6 +193,22 @@
                                 <th>Fail Stage</th>
                                 <th>ID</th>
                                 <th>Created</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                        </tbody>
+                    </table>
+                </div>
+                <div class="panel" data-content="success">
+                    <table class="table is-narrow is-hoverable is-fullwidth jobtable" id="jobs_success">
+                        <thead>
+                            <tr>
+                                <th>ACC</th>
+                                <th>MRN</th>
+                                <th>Scope</th>
+                                <th>Rule</th>
+                                <th>ID</th>
+                                <th>Completed</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -330,7 +354,280 @@
                 <button class="button" type="button" id="closeprocessresults"><span class="icon"><i class="fas fa-check"></i></span><span>Close</span></button>
             </footer>
         </div>
-    </div>     
+    </div>
+
+    <div class="modal" id="reprocess_settings_modal">
+        <div class="modal-background"></div>
+        <div class="modal-card" style="width: 700px;">
+            <header class="modal-card-head">
+                <p class="modal-card-title">Reprocess with Settings</p>
+            </header>
+            <section class="modal-card-body">
+                <div class="container">
+                    <input type="hidden" id="reprocess_task_id" value="">
+                    <div class="field">
+                        <label class="checkbox">
+                            <input type="checkbox" id="use_current_settings" checked>
+                            Use current rule/module settings from configuration
+                        </label>
+                        <p class="help">When checked, the task will be reprocessed using the current settings defined in the rule configuration.</p>
+                    </div>
+                    <div class="field" id="custom_settings_field" style="display: none;">
+                        <label class="label">Custom Module Settings (JSON)</label>
+                        <div class="control">
+                            <textarea class="textarea" id="custom_module_settings" data-json rows="10" placeholder='{"key": "value"}'>{}</textarea>
+                        </div>
+                        <p class="help">Enter custom settings as JSON. These settings will be merged with the default module settings.</p>
+                    </div>
+                </div>
+            </section>
+            <footer class="modal-card-foot buttons is-centered">
+                <button class="button is-success" type="button" id="confirm_reprocess">
+                    <span class="icon"><i class="fas fa-redo-alt"></i></span><span>Reprocess</span>
+                </button>
+                <button class="button" type="button" id="close_reprocess_modal">
+                    <span class="icon"><i class="fas fa-times"></i></span><span>Cancel</span>
+                </button>
+            </footer>
+        </div>
+    </div>
+
+    <div class="modal" id="pdf_viewer_modal">
+        <div class="modal-background"></div>
+        <div class="modal-card" style="width: 80%; height: 90%;">
+            <header class="modal-card-head">
+                <p class="modal-card-title">PDF Preview</p>
+                <button class="delete" aria-label="close" id="close_pdf_viewer_x"></button>
+            </header>
+            <section class="modal-card-body" style="padding: 0;">
+                <iframe id="pdf_frame" style="width: 100%; height: 100%; border: none;"></iframe>
+            </section>
+            <footer class="modal-card-foot" style="justify-content: center;">
+                <button class="button" id="close_pdf_viewer">Close</button>
+            </footer>
+        </div>
+    </div>
+
+    <!-- Advanced 3D DICOM Viewer Modal -->
+    <div class="modal" id="advanced_dicom_viewer_modal">
+        <div class="modal-background"></div>
+        <div class="modal-card advanced-viewer-modal">
+            <button class="delete advanced-viewer-close" aria-label="close" id="close_advanced_viewer_x"></button>
+            <section class="modal-card-body advanced-viewer-body" style="border-radius: 6px;">
+                <div class="advanced-viewer-container">
+                    <!-- Loading overlay -->
+                    <div class="advanced-viewer-loading" id="advanced_viewer_loading">
+                        <div class="loading-content">
+                            <i class="fas fa-spinner fa-pulse fa-3x"></i>
+                            <p id="loading_status">Initializing viewer...</p>
+                            <progress class="progress is-success" id="loading_progress" value="0" max="100">0%</progress>
+                        </div>
+                    </div>
+
+                    <!-- 4-quadrant grid -->
+                    <div class="viewer-grid">
+                        <!-- Axial viewport -->
+                        <div class="viewport-container" id="viewport_axial_container">
+                            <div class="viewport-label">AXIAL</div>
+                            <div class="viewport" id="viewport_axial"></div>
+                            <div class="orientation-labels">
+                                <span class="orientation-top">A</span>
+                                <span class="orientation-bottom">P</span>
+                                <span class="orientation-left">R</span>
+                                <span class="orientation-right">L</span>
+                            </div>
+                            <div class="slice-info" id="axial_slice_info">Slice: 0/0</div>
+                        </div>
+
+                        <!-- Sagittal viewport -->
+                        <div class="viewport-container" id="viewport_sagittal_container">
+                            <div class="viewport-label">SAGITTAL</div>
+                            <div class="viewport" id="viewport_sagittal"></div>
+                            <div class="orientation-labels">
+                                <span class="orientation-top">S</span>
+                                <span class="orientation-bottom">I</span>
+                                <span class="orientation-left">A</span>
+                                <span class="orientation-right">P</span>
+                            </div>
+                            <div class="slice-info" id="sagittal_slice_info">Slice: 0/0</div>
+                        </div>
+
+                        <!-- Coronal viewport -->
+                        <div class="viewport-container" id="viewport_coronal_container">
+                            <div class="viewport-label">CORONAL</div>
+                            <div class="viewport" id="viewport_coronal"></div>
+                            <div class="orientation-labels">
+                                <span class="orientation-top">S</span>
+                                <span class="orientation-bottom">I</span>
+                                <span class="orientation-left">R</span>
+                                <span class="orientation-right">L</span>
+                            </div>
+                            <div class="slice-info" id="coronal_slice_info">Slice: 0/0</div>
+                        </div>
+
+                        <!-- Control panel -->
+                        <div class="control-panel" id="viewer_control_panel">
+                            <h6 class="control-section-title">Window/Level</h6>
+
+                            <div class="field">
+                                <label class="label is-small">Presets</label>
+                                <div class="select is-small is-fullwidth">
+                                    <select id="windowing_preset">
+                                        <option value="custom">Custom</option>
+                                        <optgroup label="CT">
+                                            <option value="ct_brain">CT Brain (W:80 L:40)</option>
+                                            <option value="ct_bone">CT Bone (W:2000 L:500)</option>
+                                            <option value="ct_lung">CT Lung (W:1500 L:-600)</option>
+                                            <option value="ct_abdomen">CT Abdomen (W:400 L:40)</option>
+                                            <option value="ct_liver">CT Liver (W:150 L:30)</option>
+                                        </optgroup>
+                                        <optgroup label="MR">
+                                            <option value="mr_t1">MR T1 (W:500 L:250)</option>
+                                            <option value="mr_t2">MR T2 (W:400 L:200)</option>
+                                        </optgroup>
+                                        <optgroup label="PET">
+                                            <option value="pet_suv">PET SUV (W:10 L:5)</option>
+                                        </optgroup>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <div class="field">
+                                <label class="label is-small">Min / Max</label>
+                                <div class="field has-addons">
+                                    <p class="control is-expanded">
+                                        <input class="input is-small" type="number" id="window_min_input" placeholder="Min" style="background:#363636;color:#fff;border-color:#555;">
+                                    </p>
+                                    <p class="control is-expanded">
+                                        <input class="input is-small" type="number" id="window_max_input" placeholder="Max" style="background:#363636;color:#fff;border-color:#555;">
+                                    </p>
+                                </div>
+                            </div>
+
+                            <div class="windowing-info" style="font-size: 11px; color: #888; margin-bottom: 12px;">
+                                <span>W: <span id="window_width_value">400</span></span> &nbsp;|&nbsp;
+                                <span>L: <span id="window_level_value">40</span></span>
+                            </div>
+
+                            <h6 class="control-section-title">View Layout</h6>
+
+                            <div class="field">
+                                <div class="buttons are-small has-addons view-layout-buttons">
+                                    <button class="button is-dark is-active" id="view_all" data-layout="all" title="All Views">
+                                        <span class="icon"><i class="fas fa-th-large"></i></span>
+                                    </button>
+                                    <button class="button is-dark" id="view_axial" data-layout="axial" title="Axial Only">
+                                        <span>Ax</span>
+                                    </button>
+                                    <button class="button is-dark" id="view_sagittal" data-layout="sagittal" title="Sagittal Only">
+                                        <span>Sag</span>
+                                    </button>
+                                    <button class="button is-dark" id="view_coronal" data-layout="coronal" title="Coronal Only">
+                                        <span>Cor</span>
+                                    </button>
+                                </div>
+                            </div>
+
+                            <h6 class="control-section-title">Display</h6>
+
+                            <div class="field">
+                                <label class="label is-small">Colormap</label>
+                                <div class="select is-small is-fullwidth">
+                                    <select id="colormap_select">
+                                        <option value="gray">Grayscale</option>
+                                        <option value="inverted">Inverted</option>
+                                        <option value="hot">Hot</option>
+                                        <option value="cool">Cool</option>
+                                        <option value="jet">Jet</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <div class="field">
+                                <label class="checkbox is-small" style="color: #ccc;">
+                                    <input type="checkbox" id="colorbar_toggle">
+                                    Show Colorbar
+                                </label>
+                            </div>
+
+                            <div class="field">
+                                <label class="checkbox is-small" style="color: #ccc;">
+                                    <input type="checkbox" id="interpolation_toggle" checked>
+                                    Smooth Interpolation
+                                </label>
+                            </div>
+
+                            <h6 class="control-section-title">Tools</h6>
+
+                            <div class="buttons are-small tool-buttons">
+                                <button class="button is-dark tool-btn is-active" id="tool_crosshairs" data-tool="crosshairs" title="Crosshairs">
+                                    <span class="icon"><i class="fas fa-crosshairs"></i></span>
+                                </button>
+                                <button class="button is-dark tool-btn" id="tool_zoom" data-tool="zoom" title="Zoom">
+                                    <span class="icon"><i class="fas fa-search-plus"></i></span>
+                                </button>
+                                <button class="button is-dark tool-btn" id="tool_pan" data-tool="pan" title="Pan">
+                                    <span class="icon"><i class="fas fa-arrows-alt"></i></span>
+                                </button>
+                                <button class="button is-dark tool-btn" id="tool_window" data-tool="window" title="Window/Level">
+                                    <span class="icon"><i class="fas fa-adjust"></i></span>
+                                </button>
+                                <button class="button is-warning" id="tool_reset" title="Reset View">
+                                    <span class="icon"><i class="fas fa-undo"></i></span>
+                                </button>
+                            </div>
+
+                            <!-- 4D Controls (hidden by default) -->
+                            <div id="controls_4d" style="display: none;">
+                                <h6 class="control-section-title">4D Playback</h6>
+                                <div class="field">
+                                    <label class="label is-small">Timepoint: <span id="timepoint_value">1</span> / <span id="timepoint_max">1</span></label>
+                                    <input class="slider is-fullwidth" id="timepoint_slider" type="range" min="1" max="1" value="1">
+                                </div>
+                                <div class="buttons are-small">
+                                    <button class="button is-success" id="btn_play">
+                                        <span class="icon"><i class="fas fa-play"></i></span>
+                                    </button>
+                                    <button class="button is-warning" id="btn_pause" style="display: none;">
+                                        <span class="icon"><i class="fas fa-pause"></i></span>
+                                    </button>
+                                    <button class="button is-dark" id="btn_stop">
+                                        <span class="icon"><i class="fas fa-stop"></i></span>
+                                    </button>
+                                </div>
+                            </div>
+
+                            <h6 class="control-section-title">Volume Info</h6>
+                            <div class="volume-info" id="volume_info">
+                                <p><strong>Modality:</strong> <span id="info_modality">-</span></p>
+                                <p><strong>Dimensions:</strong> <span id="info_dimensions">-</span></p>
+                                <p><strong>Slices:</strong> <span id="info_slices">-</span></p>
+                                <p><strong>Spacing:</strong> <span id="info_spacing">-</span></p>
+                            </div>
+
+                            <h6 class="control-section-title">Cursor Info</h6>
+                            <div class="pixel-info" id="pixel_info_container" style="display: none;">
+                                <p><strong>View:</strong> <span id="pixel_info_view">-</span> (Slice <span id="pixel_info_slice">-</span>)</p>
+                                <p><strong>Position:</strong> <span id="pixel_info_coords">-</span></p>
+                                <p><strong>Value:</strong> <span id="pixel_info_value">-</span></p>
+                            </div>
+                            <div class="pixel-info-placeholder" id="pixel_info_placeholder">
+                                <p style="color: #666; font-style: italic;">Hover over image to see pixel info</p>
+                            </div>
+
+                            <div class="keyboard-hint">
+                                <strong>Keyboard:</strong><br>
+                                <kbd>&larr;</kbd><kbd>&rarr;</kbd> or <kbd>&uarr;</kbd><kbd>&darr;</kbd> Scroll slices<br>
+                                <kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> Focus viewport<br>
+                                <kbd>R</kbd> Reset view<br>
+                                <kbd>Esc</kbd> Close
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </div>
+    </div>
 </main>
 
 <script nonce="{{ csp_nonce }}">
@@ -441,7 +738,7 @@
             return;
         }
 
-        if ($("#tab_fail").hasClass("is-active")) {       
+        if ($("#tab_fail").hasClass("is-active")) {
             $('#jobs_fail').DataTable().clear().draw();
             $('#loadingspinner').show();
             $.ajax({
@@ -467,8 +764,40 @@
             });
             $('#jobs_fail').DataTable().button(2).enable(false);
             $('#jobs_fail').DataTable().button(3).enable(false);
+            $('#jobs_fail').DataTable().button(4).enable(false);
+            $('#jobs_fail').DataTable().button(5).enable(false);
+            $('#jobs_fail').DataTable().button(6).enable(false);
             return;
-        }        
+        }
+
+        if ($("#tab_success").hasClass("is-active")) {
+            $('#jobs_success').DataTable().clear().draw();
+            $('#loadingspinner').show();
+            $.ajax({
+                type: 'GET',
+                url: '/queue/jobs/success',
+                data: {},
+                dataType: 'json',
+                error: function () {
+                    $('#erroralert').show();
+                },
+                success: function (data) {
+                    $('#erroralert').hide();
+                    var jobtable = $('#jobs_success').DataTable();
+                    Object.keys(data).forEach(function (key) {
+                        jobtable.row.add( [ data[key]["ACC"], data[key]["MRN"], data[key]["Scope"], data[key]["Rule"], key, data[key]["CompletedTime"] ] );
+                    })
+                    jobtable.draw();
+                },
+                complete: function (data) {
+                    $('#loadingspinner').hide();
+                },
+                timeout: 3000
+            });
+            $('#jobs_success').DataTable().button(2).enable(false);
+            $('#jobs_success').DataTable().button(3).enable(false);
+            return;
+        }
 
         if ($("#tab_archive").hasClass("is-active")) {       
             $('#jobs_archive').DataTable().clear().draw();
@@ -492,6 +821,7 @@
                 $('#jobs_routing').DataTable().clear().draw();
                 $('#jobs_studies').DataTable().clear().draw();
                 $('#jobs_fail').DataTable().clear().draw();
+                $('#jobs_success').DataTable().clear().draw();
                 $('#jobs_archive').DataTable().clear().draw();
             },
             success: function (data) {
@@ -619,14 +949,55 @@
         $("#closeprocessresults").on('click', function() {
             closeProcessResults();
         });
-        
+
+        // Reprocess modal handlers
+        $("#close_reprocess_modal").on('click', function() {
+            closeReprocessModal();
+        });
+
+        $("#confirm_reprocess").on('click', function() {
+            confirmReprocess();
+        });
+
+        $("#use_current_settings").on('change', function() {
+            if ($(this).is(':checked')) {
+                $('#custom_settings_field').hide();
+            } else {
+                $('#custom_settings_field').show();
+            }
+        });
+
+        // PDF viewer handlers
+        $("#close_pdf_viewer, #close_pdf_viewer_x").on('click', function() {
+            closePdfViewer();
+        });
+
+        // Keyboard navigation
+        $(document).on('keydown', function(e) {
+            if ($('#pdf_viewer_modal').hasClass('is-active')) {
+                if (e.keyCode === 27) { // Escape
+                    closePdfViewer();
+                }
+            }
+            if ($('#advanced_dicom_viewer_modal').hasClass('is-active')) {
+                if (e.keyCode === 27) { // Escape
+                    closeAdvancedDicomViewer();
+                }
+            }
+        });
+
+        // Advanced DICOM viewer handlers
+        $("#close_advanced_viewer_x").on('click', function() {
+            closeAdvancedDicomViewer();
+        });
+
         // Archive search button
         $(".field .button").on('click', function() {
             archiveSearch();
         });
-        
+
         // Setup tabs click handlers (already done in the original code)
-        
+
 
     }
     $(document).ready(function () {      
@@ -661,6 +1032,14 @@
                     }
                 },
                 {
+                    text: '<i class="fas fa-receipt"></i>',
+                    titleAttr: 'Live processing log',
+                    action: function ( e, dt, node, config ) {
+                        var jid = $('#jobs_processing').DataTable().rows( { selected: true } ).data()[0][5];
+                        showLiveLogs(jid);
+                    }
+                },
+                {
                     text: '<i class="fas fa-redo-alt"></i>',
                     titleAttr: 'Restart processing with original files',
                     action: function ( e, dt, node, config ) {
@@ -672,20 +1051,22 @@
                     text: '<i class="fas fa-trash-alt"></i>',
                     titleAttr: 'Cancel job',
                     action: function ( e, dt, node, config ) {
-                        alert("Coming soon!");                    
+                        var jid = $('#jobs_processing').DataTable().rows( { selected: true } ).data()[0][5];
+                        deleteJob(jid, 'processing');
                     }
                 }
             ],
             dom: 'Bfrtip',
             "scrollY": "740px",
             "scrollX": false,
-            "scrollCollapse": true,   
-        } );        
+            "scrollCollapse": true,
+        } );
         $('#jobs_processing').DataTable().on( 'select deselect', function () {
             var selectedRows = $('#jobs_processing').DataTable().rows( { selected: true } ).count();
             $('#jobs_processing').DataTable().button(2).enable( selectedRows > 0 );
             $('#jobs_processing').DataTable().button(3).enable( selectedRows > 0 );
             $('#jobs_processing').DataTable().button(4).enable( selectedRows > 0 );
+            $('#jobs_processing').DataTable().button(5).enable( selectedRows > 0 );
         } );
 
         $('#jobs_routing').DataTable( {
@@ -721,14 +1102,15 @@
                     text: '<i class="fas fa-trash-alt"></i>',
                     titleAttr: 'Cancel job',
                     action: function ( e, dt, node, config ) {
-                        alert("Coming soon!");                    
+                        var jid = $('#jobs_routing').DataTable().rows( { selected: true } ).data()[0][5];
+                        deleteJob(jid, 'routing');
                     }
                 },
             ],
             dom: 'Bfrtip',
             "scrollY": "740px",
             "scrollX": false,
-            "scrollCollapse": true,              
+            "scrollCollapse": true,
         } );
         $('#jobs_routing').DataTable().on( 'select deselect', function () {
             var selectedRows = $('#jobs_routing').DataTable().rows( { selected: true } ).count();
@@ -772,7 +1154,8 @@
                     text: '<i class="fas fa-trash-alt"></i>',
                     titleAttr: 'Cancel study',
                     action: function ( e, dt, node, config ) {
-                        alert("Coming soon!");                    
+                        var jid = $('#jobs_studies').DataTable().rows( { selected: true } ).data()[0][0];
+                        deleteJob(jid, 'studies');
                     }
                 },
                 {
@@ -867,6 +1250,30 @@
                         var jid = $('#jobs_fail').DataTable().rows( { selected: true } ).data()[0][4];
                         restartJob(jid);
                     }
+                },
+                {
+                    text: '<i class="fas fa-cogs"></i>',
+                    titleAttr: 'Reprocess with settings',
+                    action: function ( e, dt, node, config ) {
+                        var jid = $('#jobs_fail').DataTable().rows( { selected: true } ).data()[0][4];
+                        showReprocessModal(jid);
+                    }
+                },
+                {
+                    text: '<i class="fas fa-eye"></i>',
+                    titleAttr: 'Preview output',
+                    action: function ( e, dt, node, config ) {
+                        var jid = $('#jobs_fail').DataTable().rows( { selected: true } ).data()[0][4];
+                        checkAndOpenPreview(jid);
+                    }
+                },
+                {
+                    text: '<i class="fas fa-trash-alt"></i>',
+                    titleAttr: 'Delete job',
+                    action: function ( e, dt, node, config ) {
+                        var jid = $('#jobs_fail').DataTable().rows( { selected: true } ).data()[0][4];
+                        deleteJob(jid, 'failure');
+                    }
                 }
             ],
             /*dom: 'Bfrtipf',*/
@@ -883,12 +1290,77 @@
         $('#jobs_fail').DataTable().on( 'select deselect', function () {
             var selectedRows = $('#jobs_fail').DataTable().rows( { selected: true } ).count();
             $('#jobs_fail').DataTable().button(2).enable( selectedRows > 0 );
+            $('#jobs_fail').DataTable().button(5).enable( selectedRows > 0 );
+            $('#jobs_fail').DataTable().button(6).enable( selectedRows > 0 );
             if (selectedRows == 1) {
                 let failStage = $('#jobs_fail').DataTable().rows( { selected: true } ).data()[0][3];
-                $('#jobs_fail').DataTable().button(3).enable( failStage == "Dispatching" || failStage == "Processing");
+                let isProcessingFail = failStage == "Dispatching" || failStage == "Processing";
+                $('#jobs_fail').DataTable().button(3).enable(isProcessingFail);
+                $('#jobs_fail').DataTable().button(4).enable(failStage == "Processing");
             } else {
                 $('#jobs_fail').DataTable().button(3).enable( false );
+                $('#jobs_fail').DataTable().button(4).enable( false );
             }
+        } );
+
+        $('#jobs_success').DataTable( {
+            paging:   true,
+            ordering: true,
+            info: true,
+            searching: true,
+            columnDefs: [{ targets: '_all', render: DataTable.render.text() }],
+            language: {
+                emptyTable: "No completed jobs",
+                paginate: {
+                    first: "First",
+                    last:  "Last",
+                    next:  "&gt;",
+                    previous: "&lt;"
+                },
+            },
+            select: true,
+            buttons: [
+                {
+                    extend: 'selectAll',
+                    text: '<i class="far fa-check-square"></i>',
+                    titleAttr: 'Select all',
+                },
+                {
+                    extend: 'selectNone',
+                    text: '<i class="far fa-square"></i>',
+                    titleAttr: 'Deselect all',
+                },
+                {
+                    text: '<i class="fas fa-eye"></i>',
+                    titleAttr: 'Preview output',
+                    action: function ( e, dt, node, config ) {
+                        var jid = $('#jobs_success').DataTable().rows( { selected: true } ).data()[0][4];
+                        checkAndOpenPreview(jid);
+                    }
+                },
+                {
+                    text: '<i class="fas fa-trash-alt"></i>',
+                    titleAttr: 'Delete job',
+                    action: function ( e, dt, node, config ) {
+                        var jid = $('#jobs_success').DataTable().rows( { selected: true } ).data()[0][4];
+                        deleteJob(jid, 'success');
+                    }
+                }
+            ],
+            dom: '<"columns"<"column"B><"column"f>><"columns"<"column queuetablepadding"rt>><"columns"<"column"i><"column"p><"column"f>>',
+            "scrollY": "740px",
+            "scrollX": false,
+            "scrollCollapse": true,
+            "order": [[5, 'desc'], [4, 'desc']],
+            initComplete: function() {
+                $('.dataTables_filter').last().hide();
+                $(".dataTables_info").css("color", "#dbdbdb");
+            }
+        } );
+        $('#jobs_success').DataTable().on( 'select deselect', function () {
+            var selectedRows = $('#jobs_success').DataTable().rows( { selected: true } ).count();
+            $('#jobs_success').DataTable().button(2).enable( selectedRows > 0 );
+            $('#jobs_success').DataTable().button(3).enable( selectedRows > 0 );
         } );
 
         $('#jobs_archive').DataTable( {
@@ -976,7 +1448,15 @@
                         var jid = $('#jobs_archive').DataTable().rows( { selected: true } ).data()[0].task_id;
                         showResults(jid);
                     }
-                }                
+                },
+                {
+                    text: '<i class="fas fa-trash-alt"></i>',
+                    titleAttr: 'Delete from archive',
+                    action: function ( e, dt, node, config ) {
+                        var jid = $('#jobs_archive').DataTable().rows( { selected: true } ).data()[0].task_id;
+                        deleteArchiveJob(jid);
+                    }
+                }
             ],
             dom: '<"columns"<"column"B>><"columns"<"column queuetablepadding"rt>><"columns"<"column"i><"column"p><"column"f>>',
             /*dom: 'Brtip',*/
@@ -995,6 +1475,7 @@
             $('#jobs_archive').DataTable().button(2).enable( selectedRows > 0 );
             $('#jobs_archive').DataTable().button(3).enable( selectedRows > 0 );
             $('#jobs_archive').DataTable().button(4).enable( selectedRows > 0 );
+            $('#jobs_archive').DataTable().button(5).enable( selectedRows > 0 );
         } );
         $("#job_archive_search").on('keyup', function (event) {
             event.target.value = event.target.value.replace(/[{}\x22\n]/g, '');
@@ -1095,6 +1576,56 @@
         });
     }
 
+    var liveLogsInterval = null;
+
+    function showLiveLogs(jobId) {
+        if (jobId === "") {
+            return;
+        }
+
+        $("#process_logs_display").text("Loading live logs...");
+        $("#process_logs").addClass("is-active");
+
+        // Start polling for live logs
+        function fetchLiveLogs() {
+            $.ajax({
+                type: 'GET',
+                url: '/api/task-live-logs/' + jobId,
+                dataType: 'json',
+                error: function () {
+                    $("#process_logs_display").text("Unable to load live logs for the selected task.");
+                },
+                success: function (data) {
+                    if (data.status === "processing" || data.status === "starting") {
+                        if (data.logs) {
+                            $("#process_logs_display").text(data.logs);
+                            // Auto-scroll to bottom
+                            var logDiv = document.getElementById('process_logs_display');
+                            logDiv.scrollTop = logDiv.scrollHeight;
+                        } else {
+                            $("#process_logs_display").text("Waiting for logs... (processing starting)");
+                        }
+                    } else {
+                        // Not processing anymore, try to get completed logs
+                        clearInterval(liveLogsInterval);
+                        liveLogsInterval = null;
+                        showLogs(jobId);
+                    }
+                },
+                timeout: 5000
+            });
+        }
+
+        // Initial fetch
+        fetchLiveLogs();
+
+        // Poll every 2 seconds
+        if (liveLogsInterval) {
+            clearInterval(liveLogsInterval);
+        }
+        liveLogsInterval = setInterval(fetchLiveLogs, 2000);
+    }
+
     function showResults(jobId)
     {
         if (jobId === "") {
@@ -1170,6 +1701,11 @@
 
     function closeProcessLogs()
     {
+        // Clear live logs polling if active
+        if (liveLogsInterval) {
+            clearInterval(liveLogsInterval);
+            liveLogsInterval = null;
+        }
         $("#process_logs").removeClass("is-active");
     }
 
@@ -1314,6 +1850,182 @@
                 timeout: 3000
             });
         }
+    }
+
+    function deleteJob(jobId, category, force) {
+        if (jobId === "") {
+            return;
+        }
+
+        if (!force && !confirm("Are you sure you want to delete this job? This action cannot be undone.")) {
+            return;
+        }
+
+        var url = '/queue/jobs/' + category + '/' + jobId;
+        if (force) {
+            url += '?force=true';
+        }
+
+        $.ajax({
+            type: 'DELETE',
+            url: url,
+            dataType: 'json',
+            error: function (xhr) {
+                if (xhr.responseJSON && xhr.responseJSON.hasOwnProperty("error")) {
+                    var errorMsg = xhr.responseJSON["error"];
+                    // Offer force delete if job appears stuck in processing
+                    if (errorMsg.indexOf("currently being processed") !== -1 || errorMsg.indexOf("force=true") !== -1) {
+                        if (confirm("This job appears to be stuck in processing (possibly stale). Force delete?\n\nWarning: Only use this if you're sure the job is not actually running.")) {
+                            deleteJob(jobId, category, true);
+                            return;
+                        }
+                    }
+                    alert("Delete failed: " + errorMsg);
+                } else {
+                    alert("Delete failed: unknown error.");
+                }
+            },
+            success: function (data) {
+                if (data.hasOwnProperty("error")) {
+                    alert("Delete failed: " + data["error"]);
+                } else {
+                    alert("Job deleted successfully.");
+                }
+                update();
+            },
+            timeout: 5000
+        });
+    }
+
+    function deleteArchiveJob(taskId) {
+        if (taskId === "") {
+            return;
+        }
+
+        if (!confirm("Are you sure you want to delete this task from the archive? This will remove the database records but not any files on disk.")) {
+            return;
+        }
+
+        $.ajax({
+            type: 'DELETE',
+            url: '/queue/jobs/archive/' + taskId,
+            dataType: 'json',
+            error: function (xhr) {
+                if (xhr.responseJSON && xhr.responseJSON.hasOwnProperty("error")) {
+                    alert("Delete failed: " + xhr.responseJSON["error"]);
+                } else {
+                    alert("Delete failed: unknown error.");
+                }
+            },
+            success: function (data) {
+                if (data.hasOwnProperty("error")) {
+                    alert("Delete failed: " + data["error"]);
+                } else {
+                    alert("Task deleted from archive successfully.");
+                    $('#jobs_archive').DataTable().ajax.reload();
+                }
+            },
+            timeout: 5000
+        });
+    }
+
+    function showReprocessModal(jobId) {
+        if (jobId === "") {
+            return;
+        }
+        $('#reprocess_task_id').val(jobId);
+        $('#use_current_settings').prop('checked', true);
+        $('#custom_settings_field').hide();
+        $('#custom_module_settings').val('{}');
+        $('#reprocess_settings_modal').addClass('is-active');
+    }
+
+    function closeReprocessModal() {
+        $('#reprocess_settings_modal').removeClass('is-active');
+    }
+
+    function confirmReprocess() {
+        var taskId = $('#reprocess_task_id').val();
+        var useCurrentSettings = $('#use_current_settings').is(':checked');
+        var moduleSettings = $('#custom_module_settings').val();
+
+        if (!useCurrentSettings) {
+            try {
+                JSON.parse(moduleSettings);
+            } catch (e) {
+                alert("Invalid JSON in custom settings. Please check the format.");
+                return;
+            }
+        }
+
+        $.ajax({
+            type: 'POST',
+            url: '/queue/jobs/fail/reprocess-with-settings',
+            data: {
+                'task_id': taskId,
+                'use_current_settings': useCurrentSettings,
+                'module_settings': moduleSettings
+            },
+            dataType: 'json',
+            error: function (xhr) {
+                if (xhr.responseJSON && xhr.responseJSON.hasOwnProperty("error")) {
+                    alert("Reprocess failed: " + xhr.responseJSON["error"]);
+                } else {
+                    alert("Reprocess failed: unknown error.");
+                }
+            },
+            success: function (data) {
+                if (data.hasOwnProperty("error")) {
+                    alert("Reprocess failed: " + data["error"]);
+                } else {
+                    alert(data.message || "Job queued for reprocessing.");
+                    closeReprocessModal();
+                    update();
+                }
+            },
+            timeout: 10000
+        });
+    }
+
+    function openPdfViewer(taskId, filename) {
+        $('#pdf_frame').attr('src', '/api/task-pdf/' + taskId + '/' + filename);
+        $('#pdf_viewer_modal').addClass('is-active');
+    }
+
+    function closePdfViewer() {
+        $('#pdf_viewer_modal').removeClass('is-active');
+        $('#pdf_frame').attr('src', '');
+    }
+
+    function checkAndOpenPreview(taskId) {
+        $.ajax({
+            url: '/api/task-dicom-files/' + taskId,
+            success: function(data) {
+                if (data.has_pdf) {
+                    // Find PDF file and open PDF viewer
+                    var pdfFile = data.files.find(function(f) { return f.is_pdf; });
+                    if (pdfFile) {
+                        openPdfViewer(taskId, pdfFile.filename);
+                        return;
+                    }
+                }
+                if (data.files.length > 0) {
+                    // Open advanced DICOM viewer
+                    openAdvancedDicomViewer(taskId);
+                } else {
+                    alert('No DICOM files found in output folder.');
+                }
+            },
+            error: function(xhr) {
+                if (xhr.status === 404) {
+                    alert('Task output folder not found. The files may have been cleaned up or the task ID does not match a folder on disk.');
+                } else if (xhr.status === 403) {
+                    alert('Access denied. Please log in again.');
+                } else {
+                    alert('Could not access task output files: ' + (xhr.responseJSON ? xhr.responseJSON.error : 'unknown error'));
+                }
+            }
+        });
     }
 
     var updateTimer;
