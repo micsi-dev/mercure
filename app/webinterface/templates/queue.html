@@ -408,6 +408,26 @@
         </div>
     </div>
 
+    <!-- Series Selector Modal -->
+    <div class="modal" id="series_selector_modal">
+        <div class="modal-background"></div>
+        <div class="modal-card" style="max-width: 600px;">
+            <header class="modal-card-head">
+                <p class="modal-card-title">Select Series to View</p>
+                <button class="delete" aria-label="close" id="close_series_selector_x"></button>
+            </header>
+            <section class="modal-card-body" id="series_selector_task_id">
+                <p class="mb-4">This study contains multiple DICOM series. Please select the series you want to view:</p>
+                <div class="series-selector-list" id="series_selector_list">
+                    <!-- Series items will be populated dynamically -->
+                </div>
+            </section>
+            <footer class="modal-card-foot" style="justify-content: center;">
+                <button class="button" id="close_series_selector">Cancel</button>
+            </footer>
+        </div>
+    </div>
+
     <!-- Advanced 3D DICOM Viewer Modal -->
     <div class="modal" id="advanced_dicom_viewer_modal">
         <div class="modal-background"></div>
@@ -428,7 +448,6 @@
                     <div class="viewer-grid">
                         <!-- Axial viewport -->
                         <div class="viewport-container" id="viewport_axial_container">
-                            <div class="viewport-label">AXIAL</div>
                             <div class="viewport" id="viewport_axial"></div>
                             <div class="orientation-labels">
                                 <span class="orientation-top">A</span>
@@ -441,7 +460,6 @@
 
                         <!-- Sagittal viewport -->
                         <div class="viewport-container" id="viewport_sagittal_container">
-                            <div class="viewport-label">SAGITTAL</div>
                             <div class="viewport" id="viewport_sagittal"></div>
                             <div class="orientation-labels">
                                 <span class="orientation-top">S</span>
@@ -454,7 +472,6 @@
 
                         <!-- Coronal viewport -->
                         <div class="viewport-container" id="viewport_coronal_container">
-                            <div class="viewport-label">CORONAL</div>
                             <div class="viewport" id="viewport_coronal"></div>
                             <div class="orientation-labels">
                                 <span class="orientation-top">S</span>
@@ -972,6 +989,11 @@
             closePdfViewer();
         });
 
+        // Series selector handlers
+        $("#close_series_selector, #close_series_selector_x").on('click', function() {
+            closeSeriesSelector();
+        });
+
         // Keyboard navigation
         $(document).on('keydown', function(e) {
             if ($('#pdf_viewer_modal').hasClass('is-active')) {
@@ -982,6 +1004,11 @@
             if ($('#advanced_dicom_viewer_modal').hasClass('is-active')) {
                 if (e.keyCode === 27) { // Escape
                     closeAdvancedDicomViewer();
+                }
+            }
+            if ($('#series_selector_modal').hasClass('is-active')) {
+                if (e.keyCode === 27) { // Escape
+                    closeSeriesSelector();
                 }
             }
         });
@@ -2001,16 +2028,36 @@
         $.ajax({
             url: '/api/task-dicom-files/' + taskId,
             success: function(data) {
-                if (data.has_pdf) {
-                    // Find PDF file and open PDF viewer
-                    var pdfFile = data.files.find(function(f) { return f.is_pdf; });
-                    if (pdfFile) {
-                        openPdfViewer(taskId, pdfFile.filename);
-                        return;
+                // Debug logging
+                console.log('Preview API response:', data);
+                console.log('Series count:', data.series_count);
+                console.log('Series:', data.series);
+
+                // Get all series (including PDFs now)
+                var allSeries = data.series || [];
+
+                console.log('All series:', allSeries.length, allSeries);
+
+                if (allSeries.length > 1) {
+                    // Multiple series (images and/or PDFs) - show series selector
+                    console.log('Showing series selector for', allSeries.length, 'series');
+                    showSeriesSelector(taskId, allSeries, data.files);
+                } else if (allSeries.length === 1) {
+                    // Single series - check if it's PDF or image
+                    var series = allSeries[0];
+                    if (series.is_pdf) {
+                        var pdfFile = data.files.find(function(f) { return f.is_pdf; });
+                        if (pdfFile) {
+                            console.log('Opening PDF viewer for single PDF series');
+                            openPdfViewer(taskId, pdfFile.filename);
+                        }
+                    } else {
+                        console.log('Opening single image series directly:', series.series_uid);
+                        openAdvancedDicomViewer(taskId, series.series_uid);
                     }
-                }
-                if (data.files.length > 0) {
-                    // Open advanced DICOM viewer
+                } else if (data.files.length > 0) {
+                    // Fallback: has files but no series info
+                    console.log('Fallback: opening viewer without series filter');
                     openAdvancedDicomViewer(taskId);
                 } else {
                     alert('No DICOM files found in output folder.');

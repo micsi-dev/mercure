@@ -6,6 +6,7 @@
 // Global state for the advanced viewer
 let advancedViewerState = {
     taskId: null,
+    selectedSeriesUid: null,  // Selected series UID for filtering
     volumeInfo: null,
     is4D: false,
     currentTimepoint: 1,
@@ -39,13 +40,22 @@ let advancedViewerState = {
     activeViewport: null,
     imageCache: {},
     loadingImages: {},
+    pendingRequests: {},  // Track request IDs to ignore stale responses
+    maxConcurrentPreloads: 4, // Limit concurrent preload requests
+    activePreloads: 0,
     crosshairsEnabled: true,
     windowingDebounceTimer: null,
     colormap: 'gray',
     showColorbar: false,
     interpolation: true,
     focusedViewport: 'axial',
-    viewLayout: 'all' // 'all', 'axial', 'sagittal', 'coronal'
+    viewLayout: 'all', // 'all', 'axial', 'sagittal', 'coronal'
+    // Scroll optimization state
+    lastScrollTime: 0,
+    scrollThrottleMs: 30,  // Minimum ms between scroll events
+    pendingScrollRender: null,
+    isScrolling: false,
+    scrollEndTimer: null
 };
 
 // Windowing presets
@@ -81,9 +91,12 @@ const colormapDefs = {
 
 /**
  * Open the advanced DICOM viewer for a task
+ * @param {string} taskId - The task ID
+ * @param {string} [seriesUid] - Optional series UID to filter by
  */
-async function openAdvancedDicomViewer(taskId) {
+async function openAdvancedDicomViewer(taskId, seriesUid = null) {
     advancedViewerState.taskId = taskId;
+    advancedViewerState.selectedSeriesUid = seriesUid;
     advancedViewerState.imageCache = {};
     advancedViewerState.loadingImages = {};
 
@@ -94,8 +107,12 @@ async function openAdvancedDicomViewer(taskId) {
     updateLoadingStatus('Fetching volume information...', 5);
 
     try {
-        // Fetch volume metadata
-        const response = await fetch('/api/task-dicom-volume-info/' + taskId);
+        // Fetch volume metadata (with series filter if specified)
+        let volumeUrl = '/api/task-dicom-volume-info/' + taskId;
+        if (seriesUid) {
+            volumeUrl += '?series_uid=' + encodeURIComponent(seriesUid);
+        }
+        const response = await fetch(volumeUrl);
         if (!response.ok) {
             throw new Error('Failed to fetch volume info: ' + response.statusText);
         }
@@ -108,15 +125,30 @@ async function openAdvancedDicomViewer(taskId) {
         advancedViewerState.volumeInfo = volumeInfo;
         advancedViewerState.is4D = volumeInfo.is_4d;
 
-        // Set max slices for each orientation
-        advancedViewerState.maxSlices.axial = volumeInfo.dimensions.slices;
-        advancedViewerState.maxSlices.sagittal = volumeInfo.dimensions.columns;
-        advancedViewerState.maxSlices.coronal = volumeInfo.dimensions.rows;
+        // Get the acquisition plane
+        const acquisitionPlane = volumeInfo.orientation?.acquisition_plane || 'axial';
+        console.log('Acquisition plane:', acquisitionPlane);
+
+        // Set max slices based on acquisition plane
+        // For the native plane, use slices count; for reconstructed planes, use rows/columns
+        if (acquisitionPlane === 'axial') {
+            advancedViewerState.maxSlices.axial = volumeInfo.dimensions.slices;
+            advancedViewerState.maxSlices.sagittal = volumeInfo.dimensions.columns;
+            advancedViewerState.maxSlices.coronal = volumeInfo.dimensions.rows;
+        } else if (acquisitionPlane === 'coronal') {
+            advancedViewerState.maxSlices.coronal = volumeInfo.dimensions.slices;
+            advancedViewerState.maxSlices.axial = volumeInfo.dimensions.rows;
+            advancedViewerState.maxSlices.sagittal = volumeInfo.dimensions.columns;
+        } else if (acquisitionPlane === 'sagittal') {
+            advancedViewerState.maxSlices.sagittal = volumeInfo.dimensions.slices;
+            advancedViewerState.maxSlices.axial = volumeInfo.dimensions.rows;
+            advancedViewerState.maxSlices.coronal = volumeInfo.dimensions.columns;
+        }
 
         // Set initial slice indices to middle
-        advancedViewerState.sliceIndices.axial = Math.floor(volumeInfo.dimensions.slices / 2);
-        advancedViewerState.sliceIndices.sagittal = Math.floor(volumeInfo.dimensions.columns / 2);
-        advancedViewerState.sliceIndices.coronal = Math.floor(volumeInfo.dimensions.rows / 2);
+        advancedViewerState.sliceIndices.axial = Math.floor(advancedViewerState.maxSlices.axial / 2);
+        advancedViewerState.sliceIndices.sagittal = Math.floor(advancedViewerState.maxSlices.sagittal / 2);
+        advancedViewerState.sliceIndices.coronal = Math.floor(advancedViewerState.maxSlices.coronal / 2);
 
         // Auto-apply percentile windowing if available, otherwise use default
         if (volumeInfo.windowing.percentile_min !== null && volumeInfo.windowing.percentile_max !== null) {
@@ -393,19 +425,70 @@ function clearPixelInfo() {
 }
 
 /**
- * Scroll through slices
+ * Scroll through slices with throttling for smooth performance
  */
 function scrollSlice(orientation, delta) {
+    const now = performance.now();
+
+    // Calculate new index immediately
     let newIndex = advancedViewerState.sliceIndices[orientation] + delta;
     newIndex = Math.max(0, Math.min(newIndex, advancedViewerState.maxSlices[orientation] - 1));
-    if (newIndex !== advancedViewerState.sliceIndices[orientation]) {
-        advancedViewerState.sliceIndices[orientation] = newIndex;
-        loadViewportImage(orientation);
-        if (advancedViewerState.crosshairsEnabled) {
-            updateCrosshairs();
-        }
-        preloadAdjacentSlices(orientation);
+
+    if (newIndex === advancedViewerState.sliceIndices[orientation]) {
+        return; // No change
     }
+
+    // Update slice index immediately
+    advancedViewerState.sliceIndices[orientation] = newIndex;
+
+    // Throttle the actual render
+    if (now - advancedViewerState.lastScrollTime < advancedViewerState.scrollThrottleMs) {
+        // Schedule a render if we're throttling
+        if (!advancedViewerState.pendingScrollRender) {
+            advancedViewerState.pendingScrollRender = requestAnimationFrame(() => {
+                advancedViewerState.pendingScrollRender = null;
+                performScrollRender(orientation);
+            });
+        }
+        return;
+    }
+
+    advancedViewerState.lastScrollTime = now;
+    performScrollRender(orientation);
+}
+
+/**
+ * Perform the actual scroll render
+ */
+function performScrollRender(orientation) {
+    // Mark as scrolling and cancel any pending preloads
+    if (!advancedViewerState.isScrolling) {
+        advancedViewerState.isScrolling = true;
+        cancelAllPreloads();
+    }
+
+    // Clear any pending scroll end timer
+    if (advancedViewerState.scrollEndTimer) {
+        clearTimeout(advancedViewerState.scrollEndTimer);
+    }
+
+    // Load the viewport image (will use cache if available)
+    loadViewportImage(orientation);
+
+    // Update slice info immediately
+    updateSliceInfo(orientation);
+
+    // Delay crosshairs update slightly during fast scroll
+    if (advancedViewerState.crosshairsEnabled) {
+        updateCrosshairs();
+    }
+
+    // Schedule scroll end handling
+    advancedViewerState.scrollEndTimer = setTimeout(() => {
+        advancedViewerState.isScrolling = false;
+        // Preload more aggressively when scroll ends
+        preloadAdjacentSlices(orientation);
+    }, 150);
 }
 
 /**
@@ -559,7 +642,62 @@ function autoWindow() {
 }
 
 /**
+ * Get axis inversion flags based on acquisition plane.
+ * These flags determine whether click/crosshair positions need to be inverted
+ * for each axis mapping between views.
+ *
+ * The inversions account for:
+ * 1. Standard radiological display conventions (S at top, A at front, etc.)
+ * 2. How slice indices map to patient coordinates for each acquisition type
+ *
+ * For axial acquisition: slices ordered I→S (slice 0 = inferior)
+ * For coronal acquisition: rows ordered S→I (row 0 = superior), slices ordered A→P
+ * For sagittal acquisition: rows ordered S→I (row 0 = superior), slices ordered R→L
+ */
+function getAxisInversions(acquisitionPlane) {
+    // Default inversions for axial acquisition (the standard case)
+    const inversions = {
+        // Axial view clicks
+        axialClickToSagittal: false,   // normX → sagittal slice
+        axialClickToCoronal: false,    // normY → coronal slice
+        // Sagittal view clicks
+        sagittalClickToCoronal: true,  // normX → coronal slice (A at left, but slices A→P)
+        sagittalClickToAxial: true,    // normY → axial slice (S at top, slices I→S)
+        // Coronal view clicks
+        coronalClickToSagittal: false, // normX → sagittal slice
+        coronalClickToAxial: true,     // normY → axial slice (S at top, slices I→S)
+        // For drawing crosshairs (inverse mappings)
+        axialToSagittalCross: false,
+        axialToCoronalCross: false,
+        sagittalToCoronalCross: true,
+        sagittalToAxialCross: true,
+        coronalToSagittalCross: false,
+        coronalToAxialCross: true
+    };
+
+    if (acquisitionPlane === 'coronal') {
+        // Coronal acquisition: axial slices come from rows, ordered S→I
+        // So slice 0 = superior, slice max = inferior
+        // When clicking at top (normY=0, superior), we want slice 0
+        inversions.sagittalClickToAxial = false;
+        inversions.coronalClickToAxial = false;
+        inversions.sagittalToAxialCross = false;
+        inversions.coronalToAxialCross = false;
+    } else if (acquisitionPlane === 'sagittal') {
+        // Sagittal acquisition: similar to coronal for axial reconstruction
+        inversions.sagittalClickToAxial = false;
+        inversions.coronalClickToAxial = false;
+        inversions.sagittalToAxialCross = false;
+        inversions.coronalToAxialCross = false;
+    }
+
+    return inversions;
+}
+
+/**
  * Handle crosshairs click - set slice positions in other viewports
+ * This needs to account for the acquisition plane since the image axes
+ * may be different from standard axial acquisition.
  */
 function handleCrosshairsClick(e, canvas, orientation) {
     const rect = canvas.getBoundingClientRect();
@@ -596,21 +734,41 @@ function handleCrosshairsClick(e, canvas, orientation) {
 
     if (normX < 0 || normX > 1 || normY < 0 || normY > 1) return;
 
-    const volumeInfo = advancedViewerState.volumeInfo;
+    // Use maxSlices which is already corrected for the acquisition plane
+    const maxSlices = advancedViewerState.maxSlices;
+    const acquisitionPlane = advancedViewerState.volumeInfo?.orientation?.acquisition_plane || 'axial';
+
+    // Get the axis inversion flags based on acquisition plane
+    const axisInversions = getAxisInversions(acquisitionPlane);
 
     if (orientation === 'axial') {
-        advancedViewerState.sliceIndices.sagittal = Math.floor(normX * volumeInfo.dimensions.columns);
-        advancedViewerState.sliceIndices.coronal = Math.floor(normY * volumeInfo.dimensions.rows);
+        // Clicking on axial: X horizontal, Y vertical
+        // normX -> sagittal slice (X position)
+        // normY -> coronal slice (Y position)
+        const sagNorm = axisInversions.axialClickToSagittal ? (1 - normX) : normX;
+        const corNorm = axisInversions.axialClickToCoronal ? (1 - normY) : normY;
+        advancedViewerState.sliceIndices.sagittal = Math.floor(sagNorm * maxSlices.sagittal);
+        advancedViewerState.sliceIndices.coronal = Math.floor(corNorm * maxSlices.coronal);
         loadViewportImage('sagittal');
         loadViewportImage('coronal');
     } else if (orientation === 'sagittal') {
-        advancedViewerState.sliceIndices.coronal = Math.floor((1 - normX) * volumeInfo.dimensions.rows);
-        advancedViewerState.sliceIndices.axial = Math.floor((1 - normY) * volumeInfo.dimensions.slices);
+        // Clicking on sagittal: Y horizontal (A-P), Z vertical (S-I)
+        // normX -> coronal slice (Y position)
+        // normY -> axial slice (Z position)
+        const corNorm = axisInversions.sagittalClickToCoronal ? (1 - normX) : normX;
+        const axNorm = axisInversions.sagittalClickToAxial ? (1 - normY) : normY;
+        advancedViewerState.sliceIndices.coronal = Math.floor(corNorm * maxSlices.coronal);
+        advancedViewerState.sliceIndices.axial = Math.floor(axNorm * maxSlices.axial);
         loadViewportImage('coronal');
         loadViewportImage('axial');
     } else if (orientation === 'coronal') {
-        advancedViewerState.sliceIndices.sagittal = Math.floor(normX * volumeInfo.dimensions.columns);
-        advancedViewerState.sliceIndices.axial = Math.floor((1 - normY) * volumeInfo.dimensions.slices);
+        // Clicking on coronal: X horizontal (R-L), Z vertical (S-I)
+        // normX -> sagittal slice (X position)
+        // normY -> axial slice (Z position)
+        const sagNorm = axisInversions.coronalClickToSagittal ? (1 - normX) : normX;
+        const axNorm = axisInversions.coronalClickToAxial ? (1 - normY) : normY;
+        advancedViewerState.sliceIndices.sagittal = Math.floor(sagNorm * maxSlices.sagittal);
+        advancedViewerState.sliceIndices.axial = Math.floor(axNorm * maxSlices.axial);
         loadViewportImage('sagittal');
         loadViewportImage('axial');
     }
@@ -634,7 +792,7 @@ function updateCrosshairs() {
 function drawCrosshairs(ctx, canvas, orientation) {
     if (!advancedViewerState.crosshairsEnabled) return;
 
-    const volumeInfo = advancedViewerState.volumeInfo;
+    const maxSlices = advancedViewerState.maxSlices;
     const zoom = advancedViewerState.zoom[orientation];
     const pan = advancedViewerState.pan[orientation];
 
@@ -662,15 +820,28 @@ function drawCrosshairs(ctx, canvas, orientation) {
 
     let crossX, crossY;
 
+    // Use maxSlices which is corrected for the acquisition plane
+    const acquisitionPlane = advancedViewerState.volumeInfo?.orientation?.acquisition_plane || 'axial';
+    const axisInversions = getAxisInversions(acquisitionPlane);
+
     if (orientation === 'axial') {
-        crossX = imgX + (advancedViewerState.sliceIndices.sagittal / volumeInfo.dimensions.columns) * drawWidth;
-        crossY = imgY + (advancedViewerState.sliceIndices.coronal / volumeInfo.dimensions.rows) * drawHeight;
+        // Axial: X horizontal (sagittal position), Y vertical (coronal position)
+        const sagNorm = advancedViewerState.sliceIndices.sagittal / maxSlices.sagittal;
+        const corNorm = advancedViewerState.sliceIndices.coronal / maxSlices.coronal;
+        crossX = imgX + (axisInversions.axialToSagittalCross ? (1 - sagNorm) : sagNorm) * drawWidth;
+        crossY = imgY + (axisInversions.axialToCoronalCross ? (1 - corNorm) : corNorm) * drawHeight;
     } else if (orientation === 'sagittal') {
-        crossX = imgX + (1 - advancedViewerState.sliceIndices.coronal / volumeInfo.dimensions.rows) * drawWidth;
-        crossY = imgY + (1 - advancedViewerState.sliceIndices.axial / volumeInfo.dimensions.slices) * drawHeight;
+        // Sagittal: Y horizontal (coronal position), Z vertical (axial position)
+        const corNorm = advancedViewerState.sliceIndices.coronal / maxSlices.coronal;
+        const axNorm = advancedViewerState.sliceIndices.axial / maxSlices.axial;
+        crossX = imgX + (axisInversions.sagittalToCoronalCross ? (1 - corNorm) : corNorm) * drawWidth;
+        crossY = imgY + (axisInversions.sagittalToAxialCross ? (1 - axNorm) : axNorm) * drawHeight;
     } else if (orientation === 'coronal') {
-        crossX = imgX + (advancedViewerState.sliceIndices.sagittal / volumeInfo.dimensions.columns) * drawWidth;
-        crossY = imgY + (1 - advancedViewerState.sliceIndices.axial / volumeInfo.dimensions.slices) * drawHeight;
+        // Coronal: X horizontal (sagittal position), Z vertical (axial position)
+        const sagNorm = advancedViewerState.sliceIndices.sagittal / maxSlices.sagittal;
+        const axNorm = advancedViewerState.sliceIndices.axial / maxSlices.axial;
+        crossX = imgX + (axisInversions.coronalToSagittalCross ? (1 - sagNorm) : sagNorm) * drawWidth;
+        crossY = imgY + (axisInversions.coronalToAxialCross ? (1 - axNorm) : axNorm) * drawHeight;
     }
 
     ctx.strokeStyle = '#00ff00';
@@ -732,6 +903,7 @@ function drawColorbar(ctx, canvas) {
 
 /**
  * Preload adjacent slices for smoother scrolling
+ * Uses a wider range and prioritizes slices closer to current position
  */
 function preloadAdjacentSlices(orientation = null) {
     const orientations = orientation ? [orientation] : ['axial', 'sagittal', 'coronal'];
@@ -739,16 +911,26 @@ function preloadAdjacentSlices(orientation = null) {
     const wc = Math.round(advancedViewerState.windowLevel);
     const cmap = advancedViewerState.colormap;
 
+    // Preload range: more slices ahead for smoother scrolling
+    const preloadRange = advancedViewerState.isScrolling ? 3 : 8;
+
     orientations.forEach(orient => {
         const currentSlice = advancedViewerState.sliceIndices[orient];
         const maxSlice = advancedViewerState.maxSlices[orient];
 
-        for (let delta = -2; delta <= 2; delta++) {
+        // Prioritize: load closest slices first (interleaved pattern)
+        const deltas = [];
+        for (let i = 1; i <= preloadRange; i++) {
+            deltas.push(i);
+            deltas.push(-i);
+        }
+
+        deltas.forEach(delta => {
             const sliceIndex = currentSlice + delta;
-            if (sliceIndex >= 0 && sliceIndex < maxSlice && delta !== 0) {
+            if (sliceIndex >= 0 && sliceIndex < maxSlice) {
                 preloadImage(orient, sliceIndex, ww, wc, cmap);
             }
-        }
+        });
     });
 }
 
@@ -762,32 +944,65 @@ function preloadImage(orientation, sliceIndex, ww, wc, cmap) {
         return;
     }
 
+    // Limit concurrent preloads
+    if (advancedViewerState.activePreloads >= advancedViewerState.maxConcurrentPreloads) {
+        return;
+    }
+
+    // Guard against missing volume info
+    if (!advancedViewerState.volumeInfo) {
+        return;
+    }
+
     advancedViewerState.loadingImages[cacheKey] = true;
+    advancedViewerState.activePreloads++;
 
     const taskId = advancedViewerState.taskId;
+    const seriesUid = advancedViewerState.selectedSeriesUid;
+    const acquisitionPlane = advancedViewerState.volumeInfo?.orientation?.acquisition_plane || 'axial';
     let url;
 
-    if (orientation === 'axial') {
+    // Only use native files if the requested orientation matches the acquisition plane
+    if (orientation === acquisitionPlane) {
         const files = advancedViewerState.volumeInfo.files;
         if (sliceIndex >= 0 && sliceIndex < files.length) {
             const filename = files[sliceIndex].filename;
             url = `/api/task-dicom-image/${taskId}/${encodeURIComponent(filename)}?ww=${ww}&wc=${wc}&cmap=${cmap}`;
         } else {
+            advancedViewerState.activePreloads--;
+            delete advancedViewerState.loadingImages[cacheKey];
             return;
         }
     } else {
         url = `/api/task-dicom-mpr/${taskId}?orientation=${orientation}&slice=${sliceIndex}&ww=${ww}&wc=${wc}&cmap=${cmap}`;
+        if (seriesUid) {
+            url += '&series_uid=' + encodeURIComponent(seriesUid);
+        }
     }
 
     const img = new Image();
     img.onload = () => {
         advancedViewerState.imageCache[cacheKey] = img;
+        advancedViewerState.activePreloads--;
         delete advancedViewerState.loadingImages[cacheKey];
     };
     img.onerror = () => {
+        advancedViewerState.activePreloads--;
         delete advancedViewerState.loadingImages[cacheKey];
     };
     img.src = url;
+}
+
+/**
+ * Cancel/reset preload tracking when scrolling starts
+ * Image() requests can't be cancelled, but we reset the counter
+ * so new preloads can start when scrolling ends
+ */
+function cancelAllPreloads() {
+    // Reset preload tracking - existing Image loads will complete
+    // but won't block new ones after scroll ends
+    advancedViewerState.loadingImages = {};
+    advancedViewerState.activePreloads = 0;
 }
 
 /**
@@ -822,6 +1037,7 @@ function updateWindowingDisplay() {
  */
 async function loadViewportImage(orientation) {
     const taskId = advancedViewerState.taskId;
+    const seriesUid = advancedViewerState.selectedSeriesUid;
     const sliceIndex = advancedViewerState.sliceIndices[orientation];
     const ww = Math.round(advancedViewerState.windowWidth);
     const wc = Math.round(advancedViewerState.windowLevel);
@@ -835,8 +1051,21 @@ async function loadViewportImage(orientation) {
         return;
     }
 
+    // Track requests by viewport to detect stale responses
+    const requestKey = `${orientation}_current`;
+
+    // Get the acquisition plane from volume info
+    const acquisitionPlane = advancedViewerState.volumeInfo?.orientation?.acquisition_plane || 'axial';
+
+    // Guard against missing volume info
+    if (!advancedViewerState.volumeInfo) {
+        console.error('Volume info not loaded');
+        return;
+    }
+
     let url;
-    if (orientation === 'axial') {
+    // Only use native files if the requested orientation matches the acquisition plane
+    if (orientation === acquisitionPlane) {
         const files = advancedViewerState.volumeInfo.files;
         if (sliceIndex >= 0 && sliceIndex < files.length) {
             const filename = files[sliceIndex].filename;
@@ -845,26 +1074,48 @@ async function loadViewportImage(orientation) {
             return;
         }
     } else {
+        // Use MPR endpoint for reconstructed views
         url = `/api/task-dicom-mpr/${taskId}?orientation=${orientation}&slice=${sliceIndex}&ww=${ww}&wc=${wc}&cmap=${cmap}`;
+        if (seriesUid) {
+            url += '&series_uid=' + encodeURIComponent(seriesUid);
+        }
     }
+
+    // Track this request so we can ignore stale responses
+    const requestId = Date.now() + Math.random();
+    advancedViewerState.pendingRequests[requestKey] = requestId;
 
     try {
         const img = new Image();
         await new Promise((resolve, reject) => {
             img.onload = () => {
-                advancedViewerState.imageCache[cacheKey] = img;
-                renderViewportWithImage(orientation, img);
-                updateSliceInfo(orientation);
+                // Only update if this is still the current request
+                if (advancedViewerState.pendingRequests[requestKey] === requestId) {
+                    advancedViewerState.imageCache[cacheKey] = img;
+                    // Only render if slice hasn't changed
+                    if (advancedViewerState.sliceIndices[orientation] === sliceIndex) {
+                        renderViewportWithImage(orientation, img);
+                        updateSliceInfo(orientation);
+                    }
+                }
                 resolve();
             };
             img.onerror = () => {
-                console.error('Failed to load image for', orientation);
-                reject();
+                console.error('Failed to load image for', orientation, url);
+                reject(new Error('Image load failed'));
             };
             img.src = url;
         });
     } catch (error) {
-        console.error('Error loading viewport image:', error);
+        // Only log if this wasn't superseded by a newer request
+        if (advancedViewerState.pendingRequests[requestKey] === requestId) {
+            console.error('Error loading viewport image:', error);
+        }
+    } finally {
+        // Clean up if we're still the current request
+        if (advancedViewerState.pendingRequests[requestKey] === requestId) {
+            delete advancedViewerState.pendingRequests[requestKey];
+        }
     }
 }
 
@@ -1101,19 +1352,34 @@ function stopPlayback() {
 function closeAdvancedDicomViewer() {
     pausePlayback();
 
+    // Clear all timers
     if (advancedViewerState.windowingDebounceTimer) {
         clearTimeout(advancedViewerState.windowingDebounceTimer);
+        advancedViewerState.windowingDebounceTimer = null;
+    }
+    if (advancedViewerState.scrollEndTimer) {
+        clearTimeout(advancedViewerState.scrollEndTimer);
+        advancedViewerState.scrollEndTimer = null;
+    }
+    if (advancedViewerState.pendingScrollRender) {
+        cancelAnimationFrame(advancedViewerState.pendingScrollRender);
+        advancedViewerState.pendingScrollRender = null;
     }
 
     // Remove keyboard handler
     $(document).off('keydown.advancedViewer');
 
+    // Reset all state
     advancedViewerState.taskId = null;
+    advancedViewerState.selectedSeriesUid = null;
     advancedViewerState.volumeInfo = null;
     advancedViewerState.is4D = false;
     advancedViewerState.currentTimepoint = 1;
     advancedViewerState.imageCache = {};
     advancedViewerState.loadingImages = {};
+    advancedViewerState.pendingRequests = {};
+    advancedViewerState.activePreloads = 0;
+    advancedViewerState.isScrolling = false;
     advancedViewerState.crosshairsEnabled = true;
     advancedViewerState.activeTool = 'crosshairs';
     advancedViewerState.colormap = 'gray';
@@ -1154,6 +1420,79 @@ window.addEventListener('resize', () => {
     }
 });
 
+/**
+ * Show series selector modal for a task with multiple series
+ * @param {string} taskId - The task ID
+ * @param {Array} seriesList - List of series objects from the API
+ * @param {Array} filesList - List of files from the API (to find PDF filename)
+ */
+function showSeriesSelector(taskId, seriesList, filesList = []) {
+    // Store for later use
+    window._seriesSelectorTaskId = taskId;
+    window._seriesSelectorFiles = filesList;
+
+    // Build the series list HTML
+    let html = '';
+    seriesList.forEach((series, index) => {
+        const desc = series.series_description || 'Series ' + (series.series_number || index + 1);
+        const isPdf = series.is_pdf === true;
+        const thumbnailUrl = isPdf
+            ? ''
+            : `/api/task-dicom-thumbnail/${taskId}/${encodeURIComponent(series.thumbnail_file)}`;
+        const tagClass = isPdf ? 'is-danger is-light' : 'is-info is-light';
+        const countText = isPdf ? 'PDF Document' : `${series.instance_count} images`;
+        const iconHtml = isPdf
+            ? '<i class="fas fa-file-pdf fa-3x" style="color: #e74c3c;"></i>'
+            : `<img src="${thumbnailUrl}" alt="${desc}" onerror="this.parentElement.innerHTML='<i class=\\'fas fa-images fa-2x\\' style=\\'color: #888;\\'></i>'">`;
+
+        html += `
+            <div class="series-item ${isPdf ? 'is-pdf' : ''}" data-series-uid="${series.series_uid}" data-is-pdf="${isPdf}" data-thumbnail-file="${series.thumbnail_file || ''}">
+                <div class="series-thumbnail">
+                    ${iconHtml}
+                </div>
+                <div class="series-info">
+                    <div class="series-title">${desc}</div>
+                    <div class="series-meta">
+                        <span class="tag ${tagClass}">${series.modality}</span>
+                        <span class="series-count">${countText}</span>
+                    </div>
+                </div>
+            </div>
+        `;
+    });
+
+    $('#series_selector_list').html(html);
+    $('#series_selector_task_id').data('taskId', taskId);
+    $('#series_selector_modal').addClass('is-active');
+
+    // Setup click handlers for series items
+    $('.series-item').off('click').on('click', function() {
+        const seriesUid = $(this).data('series-uid');
+        const isPdf = $(this).data('is-pdf') === true || $(this).data('is-pdf') === 'true';
+        const thumbnailFile = $(this).data('thumbnail-file');
+        closeSeriesSelector();
+
+        if (isPdf) {
+            // Find PDF file and open PDF viewer
+            const pdfFile = window._seriesSelectorFiles.find(f => f.is_pdf);
+            if (pdfFile) {
+                openPdfViewer(taskId, pdfFile.filename);
+            }
+        } else {
+            openAdvancedDicomViewer(taskId, seriesUid);
+        }
+    });
+}
+
+/**
+ * Close the series selector modal
+ */
+function closeSeriesSelector() {
+    $('#series_selector_modal').removeClass('is-active');
+}
+
 // Export functions
 window.openAdvancedDicomViewer = openAdvancedDicomViewer;
 window.closeAdvancedDicomViewer = closeAdvancedDicomViewer;
+window.showSeriesSelector = showSeriesSelector;
+window.closeSeriesSelector = closeSeriesSelector;

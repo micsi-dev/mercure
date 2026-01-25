@@ -9,6 +9,9 @@ import common.monitor as monitor
 import common.config as config
 # Standard python includes
 import daiquiri
+import hashlib
+import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Optional
 from decoRouter import Router as decoRouter
@@ -20,6 +23,62 @@ from starlette.responses import JSONResponse, Response
 router = decoRouter()
 
 logger = daiquiri.getLogger("api")
+
+
+# Simple thread-safe LRU cache with time-based expiration
+class LRUCache:
+    def __init__(self, max_size=50, max_age_seconds=86400):
+        self.cache = OrderedDict()
+        self.max_size = max_size
+        self.max_age_seconds = max_age_seconds  # Default: 24 hours
+        self.lock = threading.Lock()
+
+    def _is_expired(self, entry):
+        """Check if a cache entry has expired."""
+        import time
+        return (time.time() - entry['timestamp']) > self.max_age_seconds
+
+    def get(self, key):
+        import time
+        with self.lock:
+            if key in self.cache:
+                entry = self.cache[key]
+                # Check expiration
+                if self._is_expired(entry):
+                    del self.cache[key]
+                    return None
+                self.cache.move_to_end(key)
+                return entry['value']
+            return None
+
+    def set(self, key, value):
+        import time
+        with self.lock:
+            entry = {'value': value, 'timestamp': time.time()}
+            if key in self.cache:
+                self.cache[key] = entry
+                self.cache.move_to_end(key)
+            else:
+                # Clean up expired entries before adding new ones
+                self._cleanup_expired()
+                if len(self.cache) >= self.max_size:
+                    self.cache.popitem(last=False)
+                self.cache[key] = entry
+
+    def _cleanup_expired(self):
+        """Remove expired entries (called within lock)."""
+        expired_keys = [k for k, v in self.cache.items() if self._is_expired(v)]
+        for k in expired_keys:
+            del self.cache[k]
+
+    def clear(self):
+        with self.lock:
+            self.cache.clear()
+
+
+# Global caches for MPR data
+mpr_volume_cache = LRUCache(max_size=10, max_age_seconds=86400)   # 24 hour expiration
+mpr_image_cache = LRUCache(max_size=200, max_age_seconds=86400)   # 24 hour expiration
 
 
 def get_task_output_folder(task_id: str) -> Optional[Path]:
@@ -59,6 +118,37 @@ def extract_pdf_from_dicom(dcm_path: Path) -> bytes:
         raise ImportError("pydicom is required to extract PDF from DICOM")
     ds = pydicom.dcmread(dcm_path)
     return bytes(ds.EncapsulatedDocument)
+
+
+def get_acquisition_plane(image_orientation):
+    """
+    Determine the acquisition plane from ImageOrientationPatient.
+    Returns 'axial', 'coronal', 'sagittal', or 'oblique'.
+    """
+    import numpy as np
+
+    if image_orientation is None or len(image_orientation) != 6:
+        return 'axial'  # Default assumption
+
+    row_cosines = np.array(image_orientation[:3])
+    col_cosines = np.array(image_orientation[3:])
+
+    # Calculate the normal to the image plane (cross product)
+    normal = np.cross(row_cosines, col_cosines)
+
+    # Find which axis the normal is most aligned with
+    abs_normal = np.abs(normal)
+    max_idx = np.argmax(abs_normal)
+
+    # If normal is along Z axis -> axial
+    # If normal is along Y axis -> coronal
+    # If normal is along X axis -> sagittal
+    if max_idx == 2:  # Z axis
+        return 'axial'
+    elif max_idx == 1:  # Y axis
+        return 'coronal'
+    else:  # X axis
+        return 'sagittal'
 
 
 ###################################################################################
@@ -192,7 +282,7 @@ async def get_task_info(request):
 @router.get("/task-dicom-files/{task_id}")
 @requires(["authenticated"])
 async def get_task_dicom_files(request):
-    """Get list of DICOM files in a task's output folder."""
+    """Get list of DICOM files in a task's output folder, grouped by series."""
     task_id = request.path_params["task_id"]
     output_folder = get_task_output_folder(task_id)
 
@@ -201,6 +291,7 @@ async def get_task_dicom_files(request):
 
     files = []
     has_pdf = False
+    series_map = {}  # Map series_uid -> series info
 
     try:
         # Try to import pydicom for metadata extraction
@@ -221,19 +312,43 @@ async def get_task_dicom_files(request):
                         is_pdf = sop_class == "1.2.840.10008.5.1.4.1.1.104.1"
                         if is_pdf:
                             has_pdf = True
+
+                        # Extract series information
+                        series_uid = str(ds.SeriesInstanceUID) if hasattr(ds, 'SeriesInstanceUID') else "unknown"
+                        series_desc = str(ds.SeriesDescription) if hasattr(ds, 'SeriesDescription') else ""
+                        series_num = int(ds.SeriesNumber) if hasattr(ds, 'SeriesNumber') else 0
+                        modality = str(ds.Modality) if hasattr(ds, 'Modality') else "OT"
+
                         files.append({
                             "filename": file_path.name,
                             "sop_class": sop_class,
                             "instance_number": instance_num,
-                            "is_pdf": is_pdf
+                            "is_pdf": is_pdf,
+                            "series_uid": series_uid
                         })
+
+                        # Build series info (include PDFs as separate series)
+                        if series_uid not in series_map:
+                            series_map[series_uid] = {
+                                "series_uid": series_uid,
+                                "series_description": series_desc if series_desc else ("PDF Report" if is_pdf else ""),
+                                "series_number": series_num,
+                                "modality": modality,
+                                "instance_count": 0,
+                                "thumbnail_file": file_path.name,  # Use first file as thumbnail
+                                "is_pdf": is_pdf
+                            }
+                        if series_uid in series_map:
+                            series_map[series_uid]["instance_count"] += 1
+
                     except Exception as e:
                         logger.warning(f"Could not read DICOM file {file_path}: {e}")
                         files.append({
                             "filename": file_path.name,
                             "sop_class": "",
                             "instance_number": idx,
-                            "is_pdf": False
+                            "is_pdf": False,
+                            "series_uid": "unknown"
                         })
                 else:
                     # Without pydicom, just list the files
@@ -241,16 +356,22 @@ async def get_task_dicom_files(request):
                         "filename": file_path.name,
                         "sop_class": "",
                         "instance_number": idx,
-                        "is_pdf": False
+                        "is_pdf": False,
+                        "series_uid": "unknown"
                     })
 
         # Sort by instance number
         files.sort(key=lambda x: x["instance_number"])
 
+        # Build series list sorted by series number
+        series_list = sorted(series_map.values(), key=lambda x: x["series_number"])
+
         return JSONResponse({
             "files": files,
             "total_count": len(files),
-            "has_pdf": has_pdf
+            "has_pdf": has_pdf,
+            "series": series_list,
+            "series_count": len(series_list)
         })
     except Exception as e:
         logger.exception(f"Error listing DICOM files: {e}")
@@ -401,6 +522,7 @@ async def get_task_pdf(request):
 async def get_task_dicom_volume_info(request):
     """Get volume metadata for 3D/4D DICOM rendering."""
     task_id = request.path_params["task_id"]
+    series_uid = request.query_params.get("series_uid")  # Optional series filter
     output_folder = get_task_output_folder(task_id)
 
     if not output_folder:
@@ -437,6 +559,12 @@ async def get_task_dicom_volume_info(request):
                     # Skip encapsulated PDFs
                     if sop_class == "1.2.840.10008.5.1.4.1.1.104.1":
                         continue
+
+                    # Filter by series UID if specified
+                    if series_uid:
+                        file_series_uid = str(ds.SeriesInstanceUID) if hasattr(ds, 'SeriesInstanceUID') else ""
+                        if file_series_uid != series_uid:
+                            continue
 
                     instance_num = int(ds.InstanceNumber) if hasattr(ds, 'InstanceNumber') else 0
 
@@ -578,7 +706,8 @@ async def get_task_dicom_volume_info(request):
                 "slice_thickness": slice_thickness
             },
             "orientation": {
-                "image_orientation_patient": image_orientation
+                "image_orientation_patient": image_orientation,
+                "acquisition_plane": get_acquisition_plane(image_orientation)
             },
             "windowing": {
                 "default_center": window_center,
@@ -756,6 +885,118 @@ async def get_task_dicom_image(request):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+def load_mpr_volume(task_id, series_uid, output_folder):
+    """Load and cache the 3D volume for MPR reconstruction."""
+    import pydicom
+    import numpy as np
+
+    volume_cache_key = f"{task_id}_{series_uid}"
+    cached = mpr_volume_cache.get(volume_cache_key)
+    if cached is not None:
+        return cached
+
+    # Load all DICOM files and build volume
+    files_data = []
+    image_orientation = None
+
+    for file_path in sorted(output_folder.glob("*.dcm")):
+        if file_path.is_file():
+            try:
+                ds = pydicom.dcmread(file_path, stop_before_pixels=True)
+                sop_class = str(ds.SOPClassUID) if hasattr(ds, 'SOPClassUID') else ""
+                if sop_class == "1.2.840.10008.5.1.4.1.1.104.1":
+                    continue
+
+                # Filter by series UID if specified
+                if series_uid:
+                    file_series_uid = str(ds.SeriesInstanceUID) if hasattr(ds, 'SeriesInstanceUID') else ""
+                    if file_series_uid != series_uid:
+                        continue
+
+                # Get ImageOrientationPatient from first valid file
+                if image_orientation is None and hasattr(ds, 'ImageOrientationPatient'):
+                    image_orientation = [float(x) for x in ds.ImageOrientationPatient]
+
+                # Get position for proper 3D sorting
+                image_position = None
+                if hasattr(ds, 'ImagePositionPatient'):
+                    image_position = [float(x) for x in ds.ImagePositionPatient]
+
+                slice_loc = float(ds.SliceLocation) if hasattr(ds, 'SliceLocation') else 0
+                instance_num = int(ds.InstanceNumber) if hasattr(ds, 'InstanceNumber') else 0
+
+                files_data.append({
+                    "path": file_path,
+                    "slice_location": slice_loc,
+                    "instance_number": instance_num,
+                    "image_position": image_position
+                })
+            except Exception:
+                continue
+
+    if not files_data:
+        return None
+
+    # Determine the acquisition plane
+    acquisition_plane = get_acquisition_plane(image_orientation)
+
+    # Sort by image position along the acquisition axis, or fall back to slice location
+    if files_data[0]["image_position"] is not None:
+        positions = np.array([f["image_position"] for f in files_data])
+        variance = np.var(positions, axis=0)
+        sort_axis = np.argmax(variance)
+        files_data.sort(key=lambda x: x["image_position"][sort_axis] if x["image_position"] else 0)
+    else:
+        files_data.sort(key=lambda x: (x["slice_location"], x["instance_number"]))
+
+    # Load first file to get dimensions and metadata
+    first_ds = pydicom.dcmread(files_data[0]["path"])
+    rows = first_ds.Rows
+    cols = first_ds.Columns
+    num_slices = len(files_data)
+
+    # Extract only the metadata we need (avoid storing full pydicom Dataset)
+    dicom_metadata = {
+        "window_center": None,
+        "window_width": None,
+        "photometric_interpretation": None
+    }
+    if hasattr(first_ds, 'WindowCenter'):
+        wc_val = first_ds.WindowCenter
+        dicom_metadata["window_center"] = float(wc_val[0]) if isinstance(wc_val, (list, pydicom.multival.MultiValue)) else float(wc_val)
+    if hasattr(first_ds, 'WindowWidth'):
+        ww_val = first_ds.WindowWidth
+        dicom_metadata["window_width"] = float(ww_val[0]) if isinstance(ww_val, (list, pydicom.multival.MultiValue)) else float(ww_val)
+    if hasattr(first_ds, 'PhotometricInterpretation'):
+        dicom_metadata["photometric_interpretation"] = str(first_ds.PhotometricInterpretation)
+
+    # Build 3D volume
+    volume = np.zeros((num_slices, rows, cols), dtype=np.float32)
+
+    for i, fd in enumerate(files_data):
+        ds = pydicom.dcmread(fd["path"])
+        slice_arr = ds.pixel_array.astype(np.float32)
+        if hasattr(ds, 'RescaleSlope'):
+            slice_arr = slice_arr * float(ds.RescaleSlope)
+        if hasattr(ds, 'RescaleIntercept'):
+            slice_arr = slice_arr + float(ds.RescaleIntercept)
+        volume[i] = slice_arr
+
+    result = {
+        "volume": volume,
+        "files_data": files_data,
+        "acquisition_plane": acquisition_plane,
+        "image_orientation": image_orientation,
+        "dicom_metadata": dicom_metadata,
+        "rows": rows,
+        "cols": cols,
+        "num_slices": num_slices
+    }
+
+    mpr_volume_cache.set(volume_cache_key, result)
+    return result
+
+
 @router.get("/task-dicom-mpr/{task_id}")
 @requires(["authenticated"])
 async def get_task_dicom_mpr(request):
@@ -766,10 +1007,17 @@ async def get_task_dicom_mpr(request):
     window_center = request.query_params.get("wc")
     window_width = request.query_params.get("ww")
     colormap = request.query_params.get("cmap", "gray")
+    series_uid = request.query_params.get("series_uid")  # Optional series filter
 
     output_folder = get_task_output_folder(task_id)
     if not output_folder:
         return JSONResponse({"error": "Task output folder not found"}, status_code=404)
+
+    # Check image cache first
+    cache_key = f"{task_id}_{series_uid}_{orientation}_{slice_index}_{window_center}_{window_width}_{colormap}"
+    cached_image = mpr_image_cache.get(cache_key)
+    if cached_image is not None:
+        return Response(content=cached_image, media_type="image/png")
 
     try:
         try:
@@ -780,95 +1028,140 @@ async def get_task_dicom_mpr(request):
         except ImportError as e:
             return JSONResponse({"error": f"Missing dependency: {e}"}, status_code=501)
 
-        # Load all DICOM files and build volume
-        files_data = []
-        for file_path in sorted(output_folder.glob("*.dcm")):
-            if file_path.is_file():
-                try:
-                    ds = pydicom.dcmread(file_path, stop_before_pixels=True)
-                    sop_class = str(ds.SOPClassUID) if hasattr(ds, 'SOPClassUID') else ""
-                    if sop_class == "1.2.840.10008.5.1.4.1.1.104.1":
-                        continue
-
-                    slice_loc = float(ds.SliceLocation) if hasattr(ds, 'SliceLocation') else 0
-                    instance_num = int(ds.InstanceNumber) if hasattr(ds, 'InstanceNumber') else 0
-                    files_data.append({
-                        "path": file_path,
-                        "slice_location": slice_loc,
-                        "instance_number": instance_num
-                    })
-                except Exception:
-                    continue
-
-        if not files_data:
+        # Load volume from cache or build it
+        vol_data = load_mpr_volume(task_id, series_uid, output_folder)
+        if vol_data is None:
             return JSONResponse({"error": "No valid DICOM files"}, status_code=404)
 
-        # Sort by slice location
-        files_data.sort(key=lambda x: (x["slice_location"], x["instance_number"]))
+        volume = vol_data["volume"]
+        files_data = vol_data["files_data"]
+        acquisition_plane = vol_data["acquisition_plane"]
+        dicom_metadata = vol_data["dicom_metadata"]
+        rows = vol_data["rows"]
+        cols = vol_data["cols"]
+        num_slices = vol_data["num_slices"]
 
-        # For axial view, just return the specific slice
-        if orientation == "axial":
-            if slice_index < 0 or slice_index >= len(files_data):
-                slice_index = len(files_data) // 2
-            file_path = files_data[slice_index]["path"]
-            ds = pydicom.dcmread(file_path)
-            arr = ds.pixel_array.astype(float)
+        # For the "native" view (same as acquisition), just return the specific slice
+        if orientation == acquisition_plane:
+            if slice_index < 0 or slice_index >= num_slices:
+                slice_index = num_slices // 2
+            arr = volume[slice_index]
         else:
-            # Build 3D volume for coronal/sagittal
-            # Load first file to get dimensions
-            first_ds = pydicom.dcmread(files_data[0]["path"])
-            rows = first_ds.Rows
-            cols = first_ds.Columns
-            num_slices = len(files_data)
+            # Extract MPR slice from cached volume
 
-            # Create volume array
-            volume = np.zeros((num_slices, rows, cols), dtype=float)
+            # MPR Reconstruction Guide:
+            # =========================
+            # DICOM Patient Coordinate System:
+            #   +X = patient left, +Y = patient posterior, +Z = patient superior
+            #
+            # Volume axes after loading: [slice_idx, row_idx, col_idx]
+            # The meaning depends on ImageOrientationPatient (IOP).
+            #
+            # Standard display conventions (radiological):
+            #   Axial: looking from feet - left=patient right, top=anterior
+            #   Coronal: looking from front - left=patient right, top=superior
+            #   Sagittal: looking from right - left=anterior, top=superior
+            #
+            # For each acquisition plane, we need to:
+            #   1. Extract the correct 2D slice from the volume
+            #   2. Transform it to match the standard display convention
 
-            for i, fd in enumerate(files_data):
-                ds = pydicom.dcmread(fd["path"])
-                slice_arr = ds.pixel_array.astype(float)
-                if hasattr(ds, 'RescaleSlope'):
-                    slice_arr = slice_arr * float(ds.RescaleSlope)
-                if hasattr(ds, 'RescaleIntercept'):
-                    slice_arr = slice_arr + float(ds.RescaleIntercept)
-                volume[i] = slice_arr
+            if acquisition_plane == 'axial':
+                # Axial acquisition: IOP typically [1,0,0,0,1,0]
+                # Volume: [Z(slices), Y(rows:A->P), X(cols:R->L)]
+                if orientation == 'coronal':
+                    # Coronal from axial: slice along Y (rows)
+                    # Result [Z, X] - need Z vertical (S at top), X horizontal (R at left)
+                    max_idx = rows - 1
+                    slice_index = min(max(0, slice_index), max_idx)
+                    arr = volume[:, slice_index, :]  # [Z, X]
+                    arr = np.flipud(arr)  # Flip so superior is at top
+                elif orientation == 'sagittal':
+                    # Sagittal from axial: slice along X (cols)
+                    # Result [Z, Y] - need Z vertical (S at top), Y horizontal (A at left)
+                    max_idx = cols - 1
+                    slice_index = min(max(0, slice_index), max_idx)
+                    arr = volume[:, :, slice_index]  # [Z, Y]
+                    arr = np.flipud(arr)  # Flip so superior is at top
+                else:
+                    return JSONResponse({"error": "Invalid orientation"}, status_code=400)
 
-            # Extract the appropriate slice
-            if orientation == "coronal":
-                # Coronal: slice along rows (anterior-posterior)
-                max_idx = rows - 1
-                slice_index = min(max(0, slice_index), max_idx)
-                arr = volume[:, slice_index, :]  # shape: (num_slices, cols)
-                arr = np.flipud(arr)  # Flip to correct orientation
-            elif orientation == "sagittal":
-                # Sagittal: slice along columns (left-right)
-                max_idx = cols - 1
-                slice_index = min(max(0, slice_index), max_idx)
-                arr = volume[:, :, slice_index]  # shape: (num_slices, rows)
-                arr = np.flipud(arr)  # Flip to correct orientation
+            elif acquisition_plane == 'coronal':
+                # Coronal acquisition: IOP typically [1,0,0,0,0,-1]
+                # Row dir=[1,0,0]=+X, Col dir=[0,0,-1]=-Z
+                # Volume: [Y(slices:A->P), Z(rows:S->I), X(cols:R->L)]
+                if orientation == 'axial':
+                    # Axial from coronal: slice along Z (rows)
+                    # arr = volume[:, row_idx, :] gives [Y, X]
+                    # Need: Y vertical (A at top), X horizontal (R at left)
+                    max_idx = rows - 1
+                    slice_index = min(max(0, slice_index), max_idx)
+                    arr = volume[:, slice_index, :]  # [Y, X]
+                    # Y=0 is anterior (should be top), X=0 is right (should be left)
+                    # This is already correct for radiological axial view
+                elif orientation == 'sagittal':
+                    # Sagittal from coronal: slice along X (cols)
+                    # arr = volume[:, :, col_idx] gives [Y, Z]
+                    # Need: Z vertical (S at top), Y horizontal (A at left)
+                    max_idx = cols - 1
+                    slice_index = min(max(0, slice_index), max_idx)
+                    arr = volume[:, :, slice_index]  # [Y, Z]
+                    # Transpose to get [Z, Y], then check orientation
+                    arr = arr.T  # Now [Z, Y] - Z vertical, Y horizontal
+                    # Z: row 0 = superior (from coronal row 0), should be at top ✓
+                    # Y: col 0 = anterior (from slice 0), should be at left ✓
+                else:
+                    return JSONResponse({"error": "Invalid orientation"}, status_code=400)
+
+            elif acquisition_plane == 'sagittal':
+                # Sagittal acquisition: IOP typically [0,1,0,0,0,-1]
+                # Row dir=[0,1,0]=+Y, Col dir=[0,0,-1]=-Z
+                # Volume: [X(slices:R->L), Z(rows:S->I), Y(cols:A->P)]
+                if orientation == 'axial':
+                    # Axial from sagittal: slice along Z (rows)
+                    # arr = volume[:, row_idx, :] gives [X, Y]
+                    # Need: Y vertical (A at top), X horizontal (R at left)
+                    max_idx = rows - 1
+                    slice_index = min(max(0, slice_index), max_idx)
+                    arr = volume[:, slice_index, :]  # [X, Y]
+                    arr = arr.T  # Now [Y, X] - correct axes
+                    # May need flips depending on actual slice ordering
+                elif orientation == 'coronal':
+                    # Coronal from sagittal: slice along Y (cols)
+                    # arr = volume[:, :, col_idx] gives [X, Z]
+                    # Need: Z vertical (S at top), X horizontal (R at left)
+                    max_idx = cols - 1
+                    slice_index = min(max(0, slice_index), max_idx)
+                    arr = volume[:, :, slice_index]  # [X, Z]
+                    arr = arr.T  # Now [Z, X] - correct axes
+                else:
+                    return JSONResponse({"error": "Invalid orientation"}, status_code=400)
             else:
-                return JSONResponse({"error": "Invalid orientation"}, status_code=400)
+                # Oblique - fall back to axial-like behavior
+                if orientation == 'coronal':
+                    max_idx = rows - 1
+                    slice_index = min(max(0, slice_index), max_idx)
+                    arr = volume[:, slice_index, :]
+                    arr = np.flipud(arr)
+                elif orientation == 'sagittal':
+                    max_idx = cols - 1
+                    slice_index = min(max(0, slice_index), max_idx)
+                    arr = volume[:, :, slice_index]
+                    arr = np.flipud(arr)
+                else:
+                    return JSONResponse({"error": "Invalid orientation"}, status_code=400)
 
-            # Get rescale values from first file for windowing defaults
-            ds = first_ds
-
-        # Apply rescale for axial (already done for coronal/sagittal in loop)
-        if orientation == "axial":
-            if hasattr(ds, 'RescaleSlope'):
-                arr = arr * float(ds.RescaleSlope)
-            if hasattr(ds, 'RescaleIntercept'):
-                arr = arr + float(ds.RescaleIntercept)
+        # Note: Rescale slope/intercept is already applied during volume construction
+        # and for native orientation slices, so no additional rescaling needed here.
 
         # Apply windowing
         if window_center is not None and window_width is not None:
             wc = float(window_center)
             ww = float(window_width)
         else:
-            if hasattr(ds, 'WindowCenter') and hasattr(ds, 'WindowWidth'):
-                wc_val = ds.WindowCenter
-                ww_val = ds.WindowWidth
-                wc = float(wc_val[0]) if isinstance(wc_val, (list, pydicom.multival.MultiValue)) else float(wc_val)
-                ww = float(ww_val[0]) if isinstance(ww_val, (list, pydicom.multival.MultiValue)) else float(ww_val)
+            if dicom_metadata["window_center"] is not None and dicom_metadata["window_width"] is not None:
+                wc = dicom_metadata["window_center"]
+                ww = dicom_metadata["window_width"]
             else:
                 wc = (arr.max() + arr.min()) / 2
                 ww = arr.max() - arr.min()
@@ -879,9 +1172,8 @@ async def get_task_dicom_mpr(request):
         arr = ((arr - lower) / (upper - lower + 1e-10)) * 255
         arr = arr.astype(np.uint8)
 
-        if hasattr(ds, 'PhotometricInterpretation'):
-            if ds.PhotometricInterpretation == 'MONOCHROME1':
-                arr = 255 - arr
+        if dicom_metadata["photometric_interpretation"] == 'MONOCHROME1':
+            arr = 255 - arr
 
         # Apply colormap
         arr = apply_colormap(arr, colormap)
@@ -891,8 +1183,12 @@ async def get_task_dicom_mpr(request):
         buf = io.BytesIO()
         img.save(buf, format='PNG')
         buf.seek(0)
+        img_bytes = buf.read()
 
-        return Response(buf.read(), media_type="image/png")
+        # Cache the rendered image for faster subsequent access
+        mpr_image_cache.set(cache_key, img_bytes)
+
+        return Response(content=img_bytes, media_type="image/png")
 
     except Exception as e:
         logger.exception(f"Error generating MPR: {e}")
