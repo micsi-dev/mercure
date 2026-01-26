@@ -393,25 +393,34 @@ async def delete_task(request) -> JSONResponse:
     """Delete a task and all related records from the database.
 
     Deletes in order to respect foreign key constraints:
-    1. processor_outputs (references tasks)
-    2. processor_logs (references tasks)
-    3. task_events (references tasks)
-    4. child tasks (parent_id references tasks)
-    5. parent task
+    1. Get all child task IDs
+    2. processor_outputs (for parent and all child tasks)
+    3. processor_logs (for parent and all child tasks)
+    4. task_events (for parent and all child tasks)
+    5. child tasks (parent_id references tasks)
+    6. parent task
     """
     task_id = request.path_params["task_id"]
 
     try:
-        # Delete processor outputs for this task
-        query = db.processor_outputs_table.delete().where(db.processor_outputs_table.c.task_id == task_id)
+        # First, get all child task IDs
+        query = db.tasks_table.select().where(db.tasks_table.c.parent_id == task_id)
+        child_tasks = await db.database.fetch_all(query)
+        child_task_ids = [child["id"] for child in child_tasks]
+
+        # All task IDs to delete (parent + children)
+        all_task_ids = [task_id] + child_task_ids
+
+        # Delete processor outputs for parent and all child tasks
+        query = db.processor_outputs_table.delete().where(db.processor_outputs_table.c.task_id.in_(all_task_ids))
         await db.database.execute(query)
 
-        # Delete processor logs for this task
-        query = db.processor_logs_table.delete().where(db.processor_logs_table.c.task_id == task_id)
+        # Delete processor logs for parent and all child tasks
+        query = db.processor_logs_table.delete().where(db.processor_logs_table.c.task_id.in_(all_task_ids))
         await db.database.execute(query)
 
-        # Delete task events for this task
-        query = db.task_events.delete().where(db.task_events.c.task_id == task_id)
+        # Delete task events for parent and all child tasks
+        query = db.task_events.delete().where(db.task_events.c.task_id.in_(all_task_ids))
         await db.database.execute(query)
 
         # Delete any child tasks (tasks that have this task as parent)
