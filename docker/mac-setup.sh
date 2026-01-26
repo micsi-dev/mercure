@@ -143,6 +143,29 @@ if [[ ! -f "/opt/mercure/config/db.env" ]]; then
     echo "POSTGRES_PASSWORD=mercure" > /opt/mercure/config/db.env
 fi
 
+# Generate bookkeeper.env if not exists
+if [[ ! -f "/opt/mercure/config/bookkeeper.env" ]]; then
+    echo_info "Generating bookkeeper.env..."
+    cat > /opt/mercure/config/bookkeeper.env << 'EOF'
+PORT=8080
+HOST=0.0.0.0
+DATABASE_URL=postgresql://mercure:mercure@db/mercure
+EOF
+fi
+
+# Generate webgui.env if not exists
+if [[ ! -f "/opt/mercure/config/webgui.env" ]]; then
+    echo_info "Generating webgui.env..."
+    cat > /opt/mercure/config/webgui.env << EOF
+SECRET_KEY=$(openssl rand -hex 32)
+PORT=8000
+HOST=0.0.0.0
+ENABLE_SSO=0
+AD_MERCURE_USERS_GROUP=
+AD_MERCURE_ADMINS_GROUP=
+EOF
+fi
+
 # Generate users.json if not exists
 if [[ ! -f "/opt/mercure/config/users.json" ]]; then
     echo_info "Generating users.json with default admin user..."
