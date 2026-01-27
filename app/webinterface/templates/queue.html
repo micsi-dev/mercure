@@ -9,6 +9,71 @@
     <link rel="stylesheet" type="text/css" href="{{ url_for('static', path='css/jquery.json-viewer.css') }}"/>
     <!-- Advanced DICOM Viewer -->
     <script nonce="{{ csp_nonce }}" type="text/javascript" src="{{ url_for('static', path='js/advanced-dicom-viewer.js') }}"></script>
+    <style nonce="{{ csp_nonce }}">
+        /* Expand control column styling */
+        td.dt-control {
+            cursor: pointer;
+            text-align: center;
+        }
+        td.dt-control::before {
+            content: '\f0fe';
+            font-family: 'Font Awesome 5 Free';
+            font-weight: 900;
+            color: #48c774;
+        }
+        tr.shown td.dt-control::before {
+            content: '\f146';
+            color: #f14668;
+        }
+        /* Child row styling */
+        .child-tasks-table {
+            margin: 10px 20px;
+        }
+        .child-tasks-table th,
+        .child-tasks-table td {
+            padding: 6px 12px;
+            font-size: 0.85em;
+        }
+        .child-tasks-table td:nth-last-child(2) {
+            white-space: nowrap;
+            max-width: 280px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .child-actions {
+            white-space: nowrap;
+        }
+        .child-actions .button {
+            padding: 2px 6px;
+            height: auto;
+        }
+        .child-task-row {
+            cursor: pointer;
+        }
+        .child-task-row:hover {
+            background-color: #f5f5f5;
+        }
+        /* File status icons */
+        .file-status {
+            text-align: center;
+        }
+        .file-status .fa-check-circle {
+            color: #48c774;
+        }
+        .file-status .fa-exclamation-circle {
+            color: #f14668;
+        }
+        .file-status .fa-times-circle {
+            color: #7a7a7a;
+        }
+        .file-status .fa-spinner {
+            color: #3298dc;
+        }
+        /* No children indicator */
+        .no-children {
+            color: #7a7a7a;
+        }
+    </style>
 {% endblock %}
 
 {% block content %}
@@ -217,6 +282,16 @@
                 </div>
                 <div class="panel" data-content="archive">
                     <div class="field has-addons" style="margin-top: 30px; margin-bottom: 30px;">
+                        <div class="control">
+                            <div class="select">
+                                <select id="archive_group_by">
+                                    <option value="">Grouped</option>
+                                    <option value="patient">Patients</option>
+                                    <option value="study">Studies</option>
+                                    <option value="series">Series</option>
+                                </select>
+                            </div>
+                        </div>
                         <div class="control is-expanded">
                             <input name="job_archive_search" id="job_archive_search" pattern="[0-9a-zA-Z_\-]+"
                             class="input series_completion_fix" autocomplete='off' type="text" placeholder="Find job by ACC, MRN, or patient name">
@@ -230,11 +305,14 @@
                     <table class="table is-narrow is-hoverable is-fullwidth jobtable" id="jobs_archive">
                         <thead>
                             <tr>
+                                <th></th>
                                 <th>ACC</th>
                                 <th>MRN</th>
+                                <th>UID</th>
                                 <th>Scope</th>
                                 <th>Rule</th>
                                 <th>Time</th>
+                                <th>Files</th>
                                 <th>ID</th>
                             </tr>
                         </thead>
@@ -1391,10 +1469,61 @@
         } );
 
         $('#jobs_archive').DataTable( {
-            "columnDefs": [{ targets: '_all', render: DataTable.render.text() }],
+            "columnDefs": [
+                // Apply text escaping to data columns only (not control or special columns)
+                { targets: [1, 2, 4, 5, 6, 8], render: DataTable.render.text() },
+                {
+                    targets: 0,
+                    orderable: false,
+                    className: 'dt-control',
+                    data: null,
+                    defaultContent: '',
+                    render: function(data, type, row) {
+                        if (row.child_count > 0) {
+                            return '';
+                        }
+                        return '<span class="no-children">-</span>';
+                    }
+                },
+                {
+                    // UID column - show study_uid or series_uid based on scope
+                    targets: 3,
+                    data: null,
+                    render: function(data, type, row) {
+                        // Helper to format UIDs - show full UID(s) on separate lines
+                        function formatUids(uidStr) {
+                            if (!uidStr) return '-';
+                            // Split by comma if multiple UIDs, show each on its own line
+                            var uids = uidStr.split(', ');
+                            return '<small style="white-space: pre-line; word-break: break-all;">' +
+                                   uids.map(function(u) { return escapeHtml(u.trim()); }).join('\n') +
+                                   '</small>';
+                        }
+
+                        if (row.Scope === 'PATIENT') {
+                            // For patient scope, show study UID(s) only - series UIDs shown in dropdown
+                            return formatUids(row.study_uid);
+                        } else if (row.Scope === 'STUDY') {
+                            // For study scope, show study UID only - series UIDs shown in dropdown
+                            return formatUids(row.study_uid);
+                        } else if (row.Scope === 'SERIES') {
+                            return formatUids(row.series_uid);
+                        }
+                        return '-';
+                    }
+                },
+                {
+                    targets: 7,
+                    orderable: false,
+                    className: 'file-status',
+                    data: 'task_id',
+                    render: function(data, type, row) {
+                        return '<span class="file-status-icon" data-task-id="' + data + '"><i class="fas fa-spinner fa-pulse"></i></span>';
+                    }
+                }
+            ],
             paging:   true,
             ordering: true,
-            // "info": false,
             searching: true,
             select: true,
             language: {
@@ -1404,46 +1533,29 @@
                     last:       "Last",
                     next:       "&gt;",
                     previous:   "&lt;"
-                },                
+                },
             },
             ajax: {
                 url: '/api/find-tasks',
                 data: function(d) {
-                    // Add the study filter parameter to the request
-                    d.study_filter = archiveFilterQueue;
+                    // Add the group_by parameter to the request
+                    d.group_by = $('#archive_group_by').val();
                 }
             },
             columns: [
+                { data: null, defaultContent: '' },
                 { data: 'ACC' },
                 { data: 'MRN' },
+                { data: null, defaultContent: '' },  // UID (rendered via columnDefs)
                 { data: 'Scope' },
                 { data: 'Rule' },
                 { data: 'Time' },
-                { data: 'task_id' },
+                { data: 'task_id' },  // Files column
+                { data: 'task_id' },  // ID column
             ],
             serverSide: true,
             autoWidth: false,
-            // select: true,
             buttons: [
-                {
-                    extend: 'collection',
-                    autoClose: true,
-                    text: '<i class="fas fa-filter"></i>',
-                    className: 'queueArchiveFilter',
-                    titleAttr: 'Job filter',
-                    buttons: [
-                        {
-                            text: 'Show only STUDY jobs',
-                            className: 'queueArchiveFilterButton',
-                            action: function (e, dt, node, config, cb) {
-                                // Toggles class when pressed
-                                $(e.currentTarget).toggleClass("queueArchiveFilterButton-Checked");                       
-                                archiveFilterQueue = !archiveFilterQueue;
-                                dt.ajax.reload();
-                            }
-                        }
-                    ]
-                },
                 {
                     text: '<i class="fas fa-code"></i>',
                     titleAttr: 'Job information',
@@ -1477,6 +1589,33 @@
                     }
                 },
                 {
+                    text: '<i class="fas fa-eye"></i>',
+                    titleAttr: 'Preview output',
+                    action: function ( e, dt, node, config ) {
+                        var jid = $('#jobs_archive').DataTable().rows( { selected: true } ).data()[0].task_id;
+                        console.log('Archive preview clicked for task:', jid);
+                        // First check for actual task ID (series/study files may be in parent folder)
+                        $.ajax({
+                            url: '/api/task-files-exist/' + jid,
+                            success: function(data) {
+                                console.log('task-files-exist response:', data);
+                                if (data.exists) {
+                                    var previewTaskId = data.actual_task_id || jid;
+                                    console.log('Opening preview for task:', previewTaskId);
+                                    checkAndOpenPreview(previewTaskId);
+                                } else {
+                                    console.log('No files found, exists=false');
+                                    alert('No output files found for this task.');
+                                }
+                            },
+                            error: function(xhr, status, error) {
+                                console.error('task-files-exist error:', status, error, xhr.responseText);
+                                alert('Could not check task files.');
+                            }
+                        });
+                    }
+                },
+                {
                     text: '<i class="fas fa-trash-alt"></i>',
                     titleAttr: 'Delete from archive',
                     action: function ( e, dt, node, config ) {
@@ -1486,18 +1625,97 @@
                 }
             ],
             dom: '<"columns"<"column"B>><"columns"<"column queuetablepadding"rt>><"columns"<"column"i><"column"p><"column"f>>',
-            /*dom: 'Brtip',*/
             "scrollY": "740px",
             "scrollX": false,
             "scrollCollapse": true,
-            "order": [[4, 'desc'], [5, 'desc']],
+            "order": [[6, 'desc'], [8, 'desc']],
             initComplete: function() {
                 $('.queueArchiveFilter > .dt-down-arrow').hide()
                 $('.queueArchiveFilter > .icon').hide()
+            },
+            drawCallback: function() {
+                // Check file status for visible rows
+                checkFileStatusForVisibleRows();
             }
         } );
+
+        // Handle expand/collapse for child rows
+        $('#jobs_archive tbody').on('click', 'td.dt-control', function () {
+            var tr = $(this).closest('tr');
+            var row = $('#jobs_archive').DataTable().row(tr);
+            var rowData = row.data();
+
+            // Only toggle if this row has children
+            if (!rowData || rowData.child_count <= 0) {
+                return;
+            }
+
+            if (row.child.isShown()) {
+                // Close this row
+                row.child.hide();
+                tr.removeClass('shown');
+            } else {
+                // Open this row - fetch child tasks
+                tr.addClass('shown');
+                row.child('<div class="has-text-centered"><i class="fas fa-spinner fa-pulse"></i> Loading...</div>').show();
+
+                $.ajax({
+                    url: '/api/get-child-tasks',
+                    data: {
+                        parent_id: rowData.task_id,
+                        scope: rowData.Scope.toLowerCase()
+                    },
+                    success: function(data) {
+                        row.child(formatChildTasks(data, rowData.Scope)).show();
+                    },
+                    error: function() {
+                        row.child('<div class="has-text-danger">Failed to load child tasks</div>').show();
+                    }
+                });
+            }
+        });
+
+        // Handle child task action buttons
+        $('#jobs_archive tbody').on('click', '.child-info-btn', function (e) {
+            e.stopPropagation();
+            var taskId = $(this).closest('tr').data('task-id');
+            if (taskId) showArchiveJobInformation(taskId);
+        });
+        $('#jobs_archive tbody').on('click', '.child-audit-btn', function (e) {
+            e.stopPropagation();
+            var taskId = $(this).closest('tr').data('task-id');
+            if (taskId) showAuditTrail(taskId);
+        });
+        $('#jobs_archive tbody').on('click', '.child-preview-btn', function (e) {
+            e.stopPropagation();
+            var taskId = $(this).closest('tr').data('task-id');
+            console.log('Child preview clicked for task:', taskId);
+            if (taskId) {
+                // First check for actual task ID (series files may be in parent folder)
+                $.ajax({
+                    url: '/api/task-files-exist/' + taskId,
+                    success: function(data) {
+                        console.log('task-files-exist response for child:', data);
+                        if (data.exists) {
+                            var previewTaskId = data.actual_task_id || taskId;
+                            console.log('Opening preview for child task:', previewTaskId);
+                            checkAndOpenPreview(previewTaskId);
+                        } else {
+                            console.log('No files found for child, exists=false');
+                            alert('No output files found for this task.');
+                        }
+                    },
+                    error: function(xhr, status, error) {
+                        console.error('task-files-exist error for child:', status, error, xhr.responseText);
+                        alert('Could not check task files.');
+                    }
+                });
+            }
+        });
+
         $('#jobs_archive').DataTable().on( 'select deselect', function () {
             var selectedRows = $('#jobs_archive').DataTable().rows( { selected: true } ).count();
+            $('#jobs_archive').DataTable().button(0).enable( selectedRows > 0 );
             $('#jobs_archive').DataTable().button(1).enable( selectedRows > 0 );
             $('#jobs_archive').DataTable().button(2).enable( selectedRows > 0 );
             $('#jobs_archive').DataTable().button(3).enable( selectedRows > 0 );
@@ -1509,6 +1727,11 @@
             if (event.keyCode === 13) {
                 archiveSearch();
             }
+        });
+
+        // Group-by dropdown change handler
+        $("#archive_group_by").on('change', function () {
+            $('#jobs_archive').DataTable().ajax.reload();
         });
 
         $('#job-events-table').DataTable( {
@@ -1555,6 +1778,132 @@
             update();
         });       
        
+        update();
+    });
+
+    // Format child tasks for expandable row display
+    function formatChildTasks(data, parentScope) {
+        if (!data || data.length === 0) {
+            return '<div class="has-text-grey-light" style="padding: 10px;">No child tasks found</div>';
+        }
+
+        var html = '<table class="table is-narrow child-tasks-table is-hoverable">';
+        html += '<thead><tr>';
+
+        if (parentScope === 'PATIENT') {
+            // For patient parents, show study/series info
+            html += '<th>Scope</th>';
+            html += '<th>UID</th>';
+            html += '<th>Series Description</th>';
+            html += '<th>Modality</th>';
+            html += '<th>Rule</th>';
+            html += '<th>Task ID</th>';
+            html += '<th>Actions</th>';
+        } else {
+            // For study parents, show series info
+            html += '<th>Series UID</th>';
+            html += '<th>Description</th>';
+            html += '<th>Modality</th>';
+            html += '<th>Rule</th>';
+            html += '<th>Task ID</th>';
+            html += '<th>Actions</th>';
+        }
+        html += '</tr></thead><tbody>';
+
+        for (var i = 0; i < data.length; i++) {
+            var child = data[i];
+            var taskId = escapeHtml(child.task_id || '');
+            html += '<tr class="child-task-row" data-task-id="' + taskId + '">';
+
+            if (parentScope === 'PATIENT') {
+                var scopeDisplay = (child.scope || '').toUpperCase() || 'SERIES';
+                // For patient children: show study UID for studies, series UID for series
+                var displayUid = (scopeDisplay === 'STUDY') ? (child.study_uid || '-') : (child.series_uid || '-');
+                html += '<td><span class="tag is-small ' + (scopeDisplay === 'STUDY' ? 'is-info' : 'is-light') + '">' + scopeDisplay + '</span></td>';
+                html += '<td><small style="word-break: break-all; max-width: 280px; display: inline-block;">' + escapeHtml(displayUid) + '</small></td>';
+                html += '<td>' + escapeHtml(child.series_description || '') + '</td>';
+                html += '<td>' + escapeHtml(child.modality || '') + '</td>';
+                html += '<td>' + escapeHtml(child.rule || '') + '</td>';
+                html += '<td><small>' + taskId + '</small></td>';
+            } else {
+                // For study children: show full series UID
+                html += '<td><small style="word-break: break-all; max-width: 280px; display: inline-block;">' + escapeHtml(child.series_uid || '-') + '</small></td>';
+                html += '<td>' + escapeHtml(child.series_description || '') + '</td>';
+                html += '<td>' + escapeHtml(child.modality || '') + '</td>';
+                html += '<td>' + escapeHtml(child.rule || '') + '</td>';
+                html += '<td><small>' + taskId + '</small></td>';
+            }
+            // Action buttons for child tasks
+            html += '<td class="child-actions">';
+            html += '<button class="button is-small child-info-btn" title="Job information"><i class="fas fa-code"></i></button> ';
+            html += '<button class="button is-small child-audit-btn" title="Audit trail"><i class="fas fa-list-ul"></i></button> ';
+            html += '<button class="button is-small child-preview-btn" title="Preview"><i class="fas fa-eye"></i></button>';
+            html += '</td>';
+            html += '</tr>';
+        }
+
+        html += '</tbody></table>';
+        return html;
+    }
+
+    // Escape HTML to prevent XSS
+    function escapeHtml(text) {
+        if (!text) return '';
+        var div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    // Check file status for visible rows in archive table
+    function checkFileStatusForVisibleRows() {
+        $('#jobs_archive tbody .file-status-icon').each(function() {
+            var $icon = $(this);
+            var taskId = $icon.data('task-id');
+
+            // Skip if already checked (not showing spinner)
+            if (!$icon.find('.fa-spinner').length) {
+                return;
+            }
+
+            $.ajax({
+                url: '/api/task-files-exist/' + taskId,
+                success: function(data) {
+                    var html;
+                    // Use actual_task_id for preview/navigation (may differ for series tasks)
+                    var actualTaskId = data.actual_task_id || taskId;
+                    if (data.exists) {
+                        if (data.location === 'success') {
+                            html = '<a href="#" class="file-link has-text-success" data-tab="success" data-task-id="' + actualTaskId + '">Success</a>';
+                        } else if (data.location === 'error') {
+                            html = '<a href="#" class="file-link has-text-danger" data-tab="fail" data-task-id="' + actualTaskId + '">Error</a>';
+                        } else {
+                            html = '<span class="has-text-grey">On Disk</span>';
+                        }
+                    } else {
+                        html = '<span class="has-text-grey-light">-</span>';
+                    }
+                    $icon.html(html);
+                },
+                error: function() {
+                    $icon.html('<span class="has-text-grey-light">?</span>');
+                }
+            });
+        });
+    }
+
+    // Handle clicks on file links to navigate to Success/Failure tabs
+    $(document).on('click', '.file-link', function(e) {
+        e.preventDefault();
+        var tab = $(this).data('tab');
+        var taskId = $(this).data('task-id');
+
+        // Switch to the appropriate tab
+        $('#tabs li').removeClass('is-active');
+        $('#tab_' + tab).addClass('is-active');
+        $('#tab-content div.panel').removeClass('is-active');
+        $('div.panel[data-content="' + tab + '"]').addClass('is-active');
+
+        // Refresh the tab data
         update();
     });
 

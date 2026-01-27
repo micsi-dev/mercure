@@ -81,21 +81,47 @@ mpr_volume_cache = LRUCache(max_size=10, max_age_seconds=86400)   # 24 hour expi
 mpr_image_cache = LRUCache(max_size=200, max_age_seconds=86400)   # 24 hour expiration
 
 
-def get_task_output_folder(task_id: str) -> Optional[Path]:
-    """Find task output folder in success or error directories."""
+async def get_task_output_folder(task_id: str) -> Optional[Path]:
+    """Find task output folder in success or error directories.
+
+    For series/study tasks, output may be stored under parent task folder.
+    This function queries the bookkeeper to find the correct output folder.
+    """
     try:
         config.read_config()
     except Exception:
         return None
 
+    # First try direct task_id lookup (fast path)
     for folder in [config.mercure.success_folder, config.mercure.error_folder]:
         task_folder = Path(folder) / task_id
         if task_folder.exists():
-            # Check for 'out' subfolder or direct files
             out_folder = task_folder / "out"
             if out_folder.exists():
                 return out_folder
             return task_folder
+
+    # If not found, query bookkeeper to find parent task folder
+    try:
+        folder_info = await monitor.find_output_folder(task_id)
+
+        if folder_info and folder_info.get("exists"):
+            actual_task_id = folder_info.get("task_id")
+            location = folder_info.get("location")
+
+            if location == "success":
+                task_folder = Path(config.mercure.success_folder) / actual_task_id
+            else:
+                task_folder = Path(config.mercure.error_folder) / actual_task_id
+
+            if task_folder.exists():
+                out_folder = task_folder / "out"
+                if out_folder.exists():
+                    return out_folder
+                return task_folder
+    except Exception as e:
+        logger.warning(f"Error finding output folder for task {task_id}: {e}")
+
     return None
 
 
@@ -279,12 +305,77 @@ async def get_task_info(request):
         return JSONResponse({"error": e.status_code}, status_code=e.status_code)
 
 
+@router.get("/get-child-tasks")
+@requires(["authenticated"])
+async def get_child_tasks(request):
+    parent_id = request.query_params.get("parent_id", "")
+    scope = request.query_params.get("scope", "")
+    try:
+        return JSONResponse(await monitor.get_child_tasks(parent_id, scope))
+    except monitor.MonitorHTTPError as e:
+        return JSONResponse({"error": e.status_code}, status_code=e.status_code)
+
+
+@router.get("/task-files-exist/{task_id}")
+@requires(["authenticated"])
+async def task_files_exist(request):
+    """Check if task output files exist in success or error folders.
+
+    For series/study tasks, output may be stored under parent task folder.
+    This endpoint queries the bookkeeper to find the correct output folder.
+    """
+    task_id = request.path_params["task_id"]
+
+    try:
+        config.read_config()
+    except Exception:
+        return JSONResponse({"error": "Could not read config"}, status_code=500)
+
+    result = {
+        "exists": False,
+        "location": None,
+        "has_dicom": False,
+        "actual_task_id": task_id  # The task ID where files are actually stored
+    }
+
+    # Query bookkeeper to find the output folder (handles parent lookup)
+    try:
+        folder_info = await monitor.find_output_folder(task_id)
+        logger.debug(f"find_output_folder response for {task_id}: {folder_info}")
+
+        if folder_info and folder_info.get("exists"):
+            actual_task_id = folder_info.get("task_id", task_id)
+            location = folder_info.get("location")
+
+            result["exists"] = True
+            result["location"] = location
+            result["actual_task_id"] = actual_task_id
+
+            # Check for DICOM files
+            if location == "success":
+                folder_path = Path(config.mercure.success_folder) / actual_task_id
+            else:
+                folder_path = Path(config.mercure.error_folder) / actual_task_id
+
+            out_folder = folder_path / "out"
+            check_folder = out_folder if out_folder.exists() else folder_path
+            result["has_dicom"] = any(check_folder.glob("*.dcm"))
+            logger.debug(f"Task {task_id} -> actual {actual_task_id}, location={location}, has_dicom={result['has_dicom']}")
+        else:
+            logger.debug(f"No folder found for task {task_id}: folder_info={folder_info}")
+
+    except Exception as e:
+        logger.warning(f"Error finding output folder for task {task_id}: {e}")
+
+    return JSONResponse(result)
+
+
 @router.get("/task-dicom-files/{task_id}")
 @requires(["authenticated"])
 async def get_task_dicom_files(request):
     """Get list of DICOM files in a task's output folder, grouped by series."""
     task_id = request.path_params["task_id"]
-    output_folder = get_task_output_folder(task_id)
+    output_folder = await get_task_output_folder(task_id)
 
     if not output_folder:
         return JSONResponse({"error": "Task output folder not found"}, status_code=404)
@@ -385,7 +476,7 @@ async def get_task_dicom_file(request):
     task_id = request.path_params["task_id"]
     filename = request.path_params["filename"]
 
-    output_folder = get_task_output_folder(task_id)
+    output_folder = await get_task_output_folder(task_id)
     if not output_folder:
         return JSONResponse({"error": "Task output folder not found"}, status_code=404)
 
@@ -420,7 +511,7 @@ async def get_task_dicom_slices(request):
     start = int(request.query_params.get("start", 0))
     count = int(request.query_params.get("count", 10))
 
-    output_folder = get_task_output_folder(task_id)
+    output_folder = await get_task_output_folder(task_id)
     if not output_folder:
         return JSONResponse({"error": "Task output folder not found"}, status_code=404)
 
@@ -491,7 +582,7 @@ async def get_task_pdf(request):
     task_id = request.path_params["task_id"]
     filename = request.path_params["filename"]
 
-    output_folder = get_task_output_folder(task_id)
+    output_folder = await get_task_output_folder(task_id)
     if not output_folder:
         return JSONResponse({"error": "Task output folder not found"}, status_code=404)
 
@@ -523,7 +614,7 @@ async def get_task_dicom_volume_info(request):
     """Get volume metadata for 3D/4D DICOM rendering."""
     task_id = request.path_params["task_id"]
     series_uid = request.query_params.get("series_uid")  # Optional series filter
-    output_folder = get_task_output_folder(task_id)
+    output_folder = await get_task_output_folder(task_id)
 
     if not output_folder:
         return JSONResponse({"error": "Task output folder not found"}, status_code=404)
@@ -795,7 +886,7 @@ async def get_task_dicom_image(request):
     window_width = request.query_params.get("ww")
     colormap = request.query_params.get("cmap", "gray")
 
-    output_folder = get_task_output_folder(task_id)
+    output_folder = await get_task_output_folder(task_id)
     if not output_folder:
         return JSONResponse({"error": "Task output folder not found"}, status_code=404)
 
@@ -1009,7 +1100,7 @@ async def get_task_dicom_mpr(request):
     colormap = request.query_params.get("cmap", "gray")
     series_uid = request.query_params.get("series_uid")  # Optional series filter
 
-    output_folder = get_task_output_folder(task_id)
+    output_folder = await get_task_output_folder(task_id)
     if not output_folder:
         return JSONResponse({"error": "Task output folder not found"}, status_code=404)
 
@@ -1202,7 +1293,7 @@ async def get_task_dicom_thumbnail(request):
     task_id = request.path_params["task_id"]
     filename = request.path_params["filename"]
 
-    output_folder = get_task_output_folder(task_id)
+    output_folder = await get_task_output_folder(task_id)
     if not output_folder:
         return JSONResponse({"error": "Task output folder not found"}, status_code=404)
 
