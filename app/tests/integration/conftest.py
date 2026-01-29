@@ -198,7 +198,7 @@ def mercure_base() -> Generator[Path, None, None]:
         temp_path = Path(temp_dir)
         for d in ['config', 'data']:
             (temp_path / d).mkdir()
-        for k in ["incoming", "studies", "outgoing", "success", "error", "discard", "processing", "jobs"]:
+        for k in ["incoming", "studies", "patients", "outgoing", "success", "error", "discard", "processing", "jobs"]:
             (temp_path / 'data' / k).mkdir()
         yield temp_path
 

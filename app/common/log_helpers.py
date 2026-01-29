@@ -15,17 +15,18 @@ setup_complete = False
 class FlushingStream:
     """A stream wrapper that flushes after every write for real-time log output."""
 
-    def __init__(self, stream):
+    def __init__(self, stream: typing.TextIO) -> None:
         self.stream = stream
 
-    def write(self, data):
+    def write(self, data: str) -> int:
         self.stream.write(data)
         self.stream.flush()
+        return len(data)
 
-    def flush(self):
+    def flush(self) -> None:
         self.stream.flush()
 
-    def __getattr__(self, name):
+    def __getattr__(self, name: str) -> typing.Any:
         return getattr(self.stream, name)
 
 
@@ -137,7 +138,7 @@ def get_logger() -> ExceptionsKeywordArgumentAdapter:
             get_loglevel(),
             outputs=(
                 daiquiri.output.Stream(
-                    stream=FlushingStream(sys.stderr),
+                    stream=FlushingStream(sys.stderr),  # type: ignore[arg-type]
                     formatter=daiquiri.formatter.ColorExtrasFormatter(
                         fmt=get_logformat(), keywords={"event_type", "severity", "context_task"}
                     )

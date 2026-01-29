@@ -241,7 +241,8 @@ async def docker_runtime(task: Task, folder: Path, file_count_begin: int, task_p
     unbuffered_environment = dict(PYTHONUNBUFFERED="1")
 
     environment = {**module_environment, **mercure_environment, **monai_environment, **unbuffered_environment}
-    arguments = decode_task_json(module.docker_arguments)
+    from common.types import filter_docker_arguments
+    arguments = filter_docker_arguments(decode_task_json(module.docker_arguments))
 
     lock_id = str(uuid.uuid1())
     persistence_lock_file: Optional[Path] = None
@@ -483,7 +484,7 @@ async def docker_runtime(task: Task, folder: Path, file_count_begin: int, task_p
                 logger.info(f"Module {task_processing.module_name} using network mode: {network_mode}")
 
         # Configure container runtime security (least privilege)
-        security_config = {}
+        security_config: dict = {}
 
         # Drop all capabilities by default for non-root containers
         if not module.requires_root:

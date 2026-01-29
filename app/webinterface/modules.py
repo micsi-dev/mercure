@@ -64,11 +64,21 @@ async def save_module(form, name) -> None:
         new_settings: Dict = json.loads(form.get("settings", "{}"))
     except Exception:
         new_settings = {}
+
+    # Filter docker_arguments to only allow whitelisted keys
+    from common.types import filter_docker_arguments
+    raw_docker_arguments = form.get("docker_arguments", "")
+    try:
+        parsed_args = json.loads(raw_docker_arguments) if raw_docker_arguments else {}
+    except json.JSONDecodeError:
+        parsed_args = {}
+    filtered_docker_arguments = json.dumps(filter_docker_arguments(parsed_args)) if parsed_args else ""
+
     config.mercure.modules[name] = Module(
         docker_tag=form.get("docker_tag", "").strip(),
         additional_volumes=form.get("additional_volumes", ""),
         environment=form.get("environment", ""),
-        docker_arguments=form.get("docker_arguments", ""),
+        docker_arguments=filtered_docker_arguments,
         settings=new_settings,
         contact=strip_untrusted(form.get("contact", "")),
         comment=strip_untrusted(form.get("comment", "")),

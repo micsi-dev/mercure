@@ -163,7 +163,7 @@ def check_study_timeout(task: TaskHasStudy, pending_series: Dict[str, float]) ->
                 example_file = next((Path(config.mercure.incoming_folder) / series_uid).glob(f"{series_uid}*.tags"))
             except StopIteration:  # No tag file with this series UID was found
                 logger.error(f"No tag file for series UID {series_uid} was found")
-                raise
+                continue
             tags_list = json.loads(example_file.read_text())
             if tags_list["StudyInstanceUID"] == study.study_uid:
                 logger.debug(f"Timeout met, but found a pending series ({series_uid}) in study {study.study_uid}")

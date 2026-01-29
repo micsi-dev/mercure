@@ -13,7 +13,7 @@ import hashlib
 import threading
 from collections import OrderedDict
 from pathlib import Path
-from typing import Optional
+from typing import Any, Dict, List, Optional, Tuple, Union
 from decoRouter import Router as decoRouter
 # Starlette-related includes
 from starlette.applications import Starlette
@@ -27,18 +27,18 @@ logger = daiquiri.getLogger("api")
 
 # Simple thread-safe LRU cache with time-based expiration
 class LRUCache:
-    def __init__(self, max_size=50, max_age_seconds=86400):
-        self.cache = OrderedDict()
+    def __init__(self, max_size: int = 50, max_age_seconds: int = 86400) -> None:
+        self.cache: OrderedDict[str, Dict[str, Any]] = OrderedDict()
         self.max_size = max_size
         self.max_age_seconds = max_age_seconds  # Default: 24 hours
         self.lock = threading.Lock()
 
-    def _is_expired(self, entry):
+    def _is_expired(self, entry: Dict[str, Any]) -> bool:
         """Check if a cache entry has expired."""
         import time
-        return (time.time() - entry['timestamp']) > self.max_age_seconds
+        return bool((time.time() - entry['timestamp']) > self.max_age_seconds)
 
-    def get(self, key):
+    def get(self, key: str) -> Any:
         import time
         with self.lock:
             if key in self.cache:
@@ -51,7 +51,7 @@ class LRUCache:
                 return entry['value']
             return None
 
-    def set(self, key, value):
+    def set(self, key: str, value: Any) -> None:
         import time
         with self.lock:
             entry = {'value': value, 'timestamp': time.time()}
@@ -65,13 +65,13 @@ class LRUCache:
                     self.cache.popitem(last=False)
                 self.cache[key] = entry
 
-    def _cleanup_expired(self):
+    def _cleanup_expired(self) -> None:
         """Remove expired entries (called within lock)."""
         expired_keys = [k for k, v in self.cache.items() if self._is_expired(v)]
         for k in expired_keys:
             del self.cache[k]
 
-    def clear(self):
+    def clear(self) -> None:
         with self.lock:
             self.cache.clear()
 
@@ -146,7 +146,7 @@ def extract_pdf_from_dicom(dcm_path: Path) -> bytes:
     return bytes(ds.EncapsulatedDocument)
 
 
-def get_acquisition_plane(image_orientation):
+def get_acquisition_plane(image_orientation: Optional[List[float]]) -> str:
     """
     Determine the acquisition plane from ImageOrientationPatient.
     Returns 'axial', 'coronal', 'sagittal', or 'oblique'.
@@ -430,7 +430,7 @@ async def get_task_dicom_files(request):
                                 "is_pdf": is_pdf
                             }
                         if series_uid in series_map:
-                            series_map[series_uid]["instance_count"] += 1
+                            series_map[series_uid]["instance_count"] = int(str(series_map[series_uid]["instance_count"])) + 1
 
                     except Exception as e:
                         logger.warning(f"Could not read DICOM file {file_path}: {e}")
@@ -452,10 +452,10 @@ async def get_task_dicom_files(request):
                     })
 
         # Sort by instance number
-        files.sort(key=lambda x: x["instance_number"])
+        files.sort(key=lambda x: int(str(x["instance_number"])))
 
         # Build series list sorted by series number
-        series_list = sorted(series_map.values(), key=lambda x: x["series_number"])
+        series_list = sorted(series_map.values(), key=lambda x: int(str(x["series_number"])))
 
         return JSONResponse({
             "files": files,
@@ -550,7 +550,7 @@ async def get_task_dicom_slices(request):
                     })
 
         # Sort by instance number
-        all_files.sort(key=lambda x: x["instance_number"])
+        all_files.sort(key=lambda x: int(str(x["instance_number"])))
 
         # Get the slice range
         total = len(all_files)
@@ -634,7 +634,7 @@ async def get_task_dicom_volume_info(request):
         columns = 0
         pixel_spacing = [1.0, 1.0]
         slice_thickness = 1.0
-        image_orientation = [1, 0, 0, 0, 1, 0]
+        image_orientation: List[float] = [1, 0, 0, 0, 1, 0]
         window_center = None
         window_width = None
         bits_allocated = 16
@@ -694,7 +694,7 @@ async def get_task_dicom_volume_info(request):
                         if hasattr(ds, 'SliceThickness'):
                             slice_thickness = float(ds.SliceThickness)
                         if hasattr(ds, 'ImageOrientationPatient'):
-                            image_orientation = [float(x) for x in ds.ImageOrientationPatient]
+                            image_orientation = [float(x) for x in ds.ImageOrientationPatient]  # type: ignore[assignment]
                         if hasattr(ds, 'WindowCenter'):
                             wc = ds.WindowCenter
                             window_center = float(wc[0]) if isinstance(wc, (list, pydicom.multival.MultiValue)) else float(wc)
@@ -765,11 +765,11 @@ async def get_task_dicom_volume_info(request):
 
             all_pixels = []
             for idx in sample_indices:
-                sample_path = output_folder / files_info[idx]["filename"]
+                sample_path = output_folder / str(files_info[idx]["filename"])
                 if sample_path.exists():
                     sample_ds = pydicom.dcmread(sample_path)
                     if hasattr(sample_ds, 'pixel_array'):
-                        arr = sample_ds.pixel_array.astype(float)
+                        arr: Any = sample_ds.pixel_array.astype(float)
                         if hasattr(sample_ds, 'RescaleSlope'):
                             arr = arr * float(sample_ds.RescaleSlope)
                         if hasattr(sample_ds, 'RescaleIntercept'):
@@ -822,7 +822,7 @@ async def get_task_dicom_volume_info(request):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
-def apply_colormap(arr, cmap_name):
+def apply_colormap(arr: Any, cmap_name: Optional[str]) -> Any:
     """Apply a colormap to a grayscale array (0-255) and return RGB array."""
     import numpy as np
 
@@ -831,7 +831,7 @@ def apply_colormap(arr, cmap_name):
         return arr
 
     # Create lookup tables for different colormaps
-    lut = np.zeros((256, 3), dtype=np.uint8)
+    lut: Any = np.zeros((256, 3), dtype=np.uint8)
 
     if cmap_name == 'inverted':
         # Inverted grayscale
@@ -918,7 +918,7 @@ async def get_task_dicom_image(request):
         if not hasattr(ds, 'pixel_array'):
             return JSONResponse({"error": "No pixel data"}, status_code=404)
 
-        arr = ds.pixel_array.astype(float)
+        arr: Any = ds.pixel_array.astype(float)
 
         # Apply rescale slope/intercept if present (for CT Hounsfield units)
         if hasattr(ds, 'RescaleSlope'):
@@ -962,7 +962,7 @@ async def get_task_dicom_image(request):
         # Apply colormap
         arr = apply_colormap(arr, colormap)
 
-        img = Image.fromarray(arr)
+        img = Image.fromarray(arr)  # type: ignore[no-untyped-call]
 
         # Convert to PNG
         buf = io.BytesIO()
@@ -976,7 +976,7 @@ async def get_task_dicom_image(request):
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
-def load_mpr_volume(task_id, series_uid, output_folder):
+def load_mpr_volume(task_id: str, series_uid: Optional[str], output_folder: Path) -> Optional[Dict[str, Any]]:
     """Load and cache the 3D volume for MPR reconstruction."""
     import pydicom
     import numpy as np
@@ -984,7 +984,7 @@ def load_mpr_volume(task_id, series_uid, output_folder):
     volume_cache_key = f"{task_id}_{series_uid}"
     cached = mpr_volume_cache.get(volume_cache_key)
     if cached is not None:
-        return cached
+        return cached  # type: ignore[no-any-return]
 
     # Load all DICOM files and build volume
     files_data = []
@@ -1036,18 +1036,18 @@ def load_mpr_volume(task_id, series_uid, output_folder):
         positions = np.array([f["image_position"] for f in files_data])
         variance = np.var(positions, axis=0)
         sort_axis = np.argmax(variance)
-        files_data.sort(key=lambda x: x["image_position"][sort_axis] if x["image_position"] else 0)
+        files_data.sort(key=lambda x: x["image_position"][sort_axis] if x["image_position"] else 0)  # type: ignore[index]
     else:
         files_data.sort(key=lambda x: (x["slice_location"], x["instance_number"]))
 
     # Load first file to get dimensions and metadata
-    first_ds = pydicom.dcmread(files_data[0]["path"])
+    first_ds = pydicom.dcmread(str(files_data[0]["path"]))
     rows = first_ds.Rows
     cols = first_ds.Columns
     num_slices = len(files_data)
 
     # Extract only the metadata we need (avoid storing full pydicom Dataset)
-    dicom_metadata = {
+    dicom_metadata: Dict[str, Any] = {
         "window_center": None,
         "window_width": None,
         "photometric_interpretation": None
@@ -1062,11 +1062,11 @@ def load_mpr_volume(task_id, series_uid, output_folder):
         dicom_metadata["photometric_interpretation"] = str(first_ds.PhotometricInterpretation)
 
     # Build 3D volume
-    volume = np.zeros((num_slices, rows, cols), dtype=np.float32)
+    volume: Any = np.zeros((num_slices, rows, cols), dtype=np.float32)
 
     for i, fd in enumerate(files_data):
-        ds = pydicom.dcmread(fd["path"])
-        slice_arr = ds.pixel_array.astype(np.float32)
+        ds = pydicom.dcmread(str(fd["path"]))
+        slice_arr: Any = ds.pixel_array.astype(np.float32)
         if hasattr(ds, 'RescaleSlope'):
             slice_arr = slice_arr * float(ds.RescaleSlope)
         if hasattr(ds, 'RescaleIntercept'):
@@ -1269,7 +1269,7 @@ async def get_task_dicom_mpr(request):
         # Apply colormap
         arr = apply_colormap(arr, colormap)
 
-        img = Image.fromarray(arr)
+        img = Image.fromarray(arr)  # type: ignore[no-untyped-call]
 
         buf = io.BytesIO()
         img.save(buf, format='PNG')
@@ -1336,7 +1336,7 @@ async def get_task_dicom_thumbnail(request):
                 if arr.shape[0] <= 4:  # RGB or RGBA
                     arr = np.transpose(arr, (1, 2, 0))
 
-            img = Image.fromarray(arr)
+            img = Image.fromarray(arr)  # type: ignore[no-untyped-call]
             img.thumbnail((100, 100))
 
             # Convert to PNG bytes
