@@ -984,7 +984,7 @@ def load_mpr_volume(task_id: str, series_uid: Optional[str], output_folder: Path
     volume_cache_key = f"{task_id}_{series_uid}"
     cached = mpr_volume_cache.get(volume_cache_key)
     if cached is not None:
-        return cached  # type: ignore[return-value]
+        return cached  # type: ignore[no-any-return]
 
     # Load all DICOM files and build volume
     files_data = []
