@@ -102,10 +102,18 @@ async def async_post(endpoint: str, **kwargs):
 
 async def get(endpoint: str, payload: Any = {}) -> Any:
     if api_key is None:
-        return
+        logger.warning(f"Monitor GET {endpoint}: api_key not set, skipping request")
+        return None
+
+    if not bookkeeper_address:
+        logger.warning(f"Monitor GET {endpoint}: bookkeeper_address not set, skipping request")
+        return None
+
+    url = bookkeeper_address + "/" + endpoint
+    logger.debug(f"Monitor GET {url} with params={payload}")
 
     async with aiohttp.ClientSession(headers={"Authorization": f"Token {api_key}"}) as session:
-        async with session.get(bookkeeper_address + "/" + endpoint, params=payload) as resp:
+        async with session.get(url, params=payload) as resp:
             if resp.status != 200:
                 logger.error(f"Failed GET request to bookkeeper endpoint {endpoint}: status: {resp.status}")
                 if resp.content_type == "application/json":
@@ -120,7 +128,9 @@ async def get(endpoint: str, payload: Any = {}) -> Any:
                 except KeyError:
                     raise MonitorHTTPError(resp.status, "Unknown error")
 
-            return await resp.json()
+            result = await resp.json()
+            logger.debug(f"Monitor GET {endpoint} response: {result}")
+            return result
 
 
 def configure(module, instance, address) -> None:
@@ -276,3 +286,46 @@ async def task_process_results(task_id="") -> Any:
 
 async def get_task_info(task_id="") -> Any:
     return await get("query/get_task_info", {"task_id": task_id})
+
+
+async def get_child_tasks(parent_id="", scope="") -> Any:
+    return await get("query/get_child_tasks", {"parent_id": parent_id, "scope": scope})
+
+
+async def find_output_folder(task_id: str) -> Any:
+    """Find the output folder for a task, handling parent task lookup for series."""
+    return await get("query/find_output_folder", {"task_id": task_id})
+
+
+async def async_delete(endpoint: str, **kwargs) -> Any:
+    """Performs a DELETE request to the bookkeeper."""
+    if api_key is None:
+        return None
+
+    if not bookkeeper_address:
+        return None
+
+    try:
+        async with aiohttp.ClientSession(
+            headers={"Authorization": f"Token {api_key}"},
+            timeout=aiohttp.ClientTimeout(total=None, connect=120, sock_connect=120, sock_read=120)
+        ) as session:
+            async with session.delete(bookkeeper_address + "/" + endpoint, **kwargs) as resp:
+                logger.debug(f"Response from DELETE {endpoint}: {resp.status}")
+                if resp.status != 200:
+                    logger.warning(
+                        f"Failed DELETE request to bookkeeper endpoint {endpoint}: status: {resp.status}"
+                    )
+                    return {"error": f"Failed with status {resp.status}"}
+                return await resp.json()
+    except aiohttp.client.ClientError as e:
+        logger.error(f"Failed DELETE request to {bookkeeper_address}/{endpoint}: {e}")
+        return {"error": str(e)}
+    except asyncio.TimeoutError as e:
+        logger.error(f"Failed DELETE request to {bookkeeper_address}/{endpoint} with timeout: {e}")
+        return {"error": "Request timeout"}
+
+
+async def delete_task(task_id: str) -> Any:
+    """Delete a task and all its related records from the bookkeeper database."""
+    return await async_delete(f"delete-task/{task_id}")

@@ -1,0 +1,88 @@
+# Docker Compose override for macOS (including Apple Silicon)
+# Usage: docker compose -f docker-compose.yml -f docker-compose.mac.yml up -d
+#
+# This file addresses Mac-specific issues:
+# 1. Docker socket permissions (requires root for UI/processor)
+# 2. User/group mapping differences on macOS
+
+x-env: &env
+  environment:
+    MERCURE_RUNNER: docker
+    MERCURE_ENV: DEV
+    MERCURE_CONFIG_FOLDER: /opt/mercure/config
+    REDIS_URL: redis://redis:6379/0
+
+x-volumes: &volumes
+  volumes:
+    - config:/opt/mercure/config
+    - data:/opt/mercure/data
+
+x-volumes-docker: &volumes-docker
+  volumes:
+    - config:/opt/mercure/config
+    - data:/opt/mercure/data
+    - /var/run/docker.sock:/var/run/docker.sock
+
+services:
+  # UI needs root access to Docker socket on macOS
+  ui:
+    <<: [*env, *volumes-docker]
+    image: mercureimaging/mercure-ui${IMAGE_TAG:-:latest}
+    user: root
+
+  # Processor needs root access to Docker socket on macOS
+  processor:
+    <<: [*env, *volumes-docker]
+    image: mercureimaging/mercure-processor${IMAGE_TAG:-:latest}
+    user: root
+
+  # Other services can run without special user settings on Mac
+  receiver:
+    <<: [*env, *volumes]
+    image: mercureimaging/mercure-receiver${IMAGE_TAG:-:latest}
+
+  cleaner:
+    <<: [*env, *volumes]
+    image: mercureimaging/mercure-cleaner${IMAGE_TAG:-:latest}
+
+  dispatcher:
+    <<: [*env, *volumes]
+    image: mercureimaging/mercure-dispatcher${IMAGE_TAG:-:latest}
+
+  router:
+    <<: [*env, *volumes]
+    image: mercureimaging/mercure-router${IMAGE_TAG:-:latest}
+
+  bookkeeper:
+    <<: [*env, *volumes]
+    image: mercureimaging/mercure-bookkeeper${IMAGE_TAG:-:latest}
+
+  worker_fast:
+    <<: *volumes
+    image: mercureimaging/mercure-worker${IMAGE_TAG:-:latest}
+
+  worker_slow:
+    <<: *volumes
+    image: mercureimaging/mercure-worker${IMAGE_TAG:-:latest}
+
+volumes:
+  db-data:
+    driver: local
+    driver_opts:
+      type: 'none'
+      o: 'bind'
+      device: '/opt/mercure/db'
+
+  data:
+    driver: local
+    driver_opts:
+      type: 'none'
+      o: 'bind'
+      device: '/opt/mercure/data'
+
+  config:
+    driver: local
+    driver_opts:
+      type: 'none'
+      o: 'bind'
+      device: '/opt/mercure/config'

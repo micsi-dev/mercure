@@ -387,6 +387,58 @@ async def store_processor_output(request) -> JSONResponse:
     return JSONResponse({"ok": ""})
 
 
+@router.delete("/delete-task/{task_id}")
+@requires("authenticated")
+async def delete_task(request) -> JSONResponse:
+    """Delete a task and all related records from the database.
+
+    Deletes in order to respect foreign key constraints:
+    1. Get all child task IDs
+    2. processor_outputs (for parent and all child tasks)
+    3. processor_logs (for parent and all child tasks)
+    4. task_events (for parent and all child tasks)
+    5. child tasks (parent_id references tasks)
+    6. parent task
+    """
+    task_id = request.path_params["task_id"]
+
+    try:
+        # First, get all child task IDs
+        query = db.tasks_table.select().where(db.tasks_table.c.parent_id == task_id)
+        child_tasks = await db.database.fetch_all(query)
+        child_task_ids = [child["id"] for child in child_tasks]
+
+        # All task IDs to delete (parent + children)
+        all_task_ids = [task_id] + child_task_ids
+
+        # Delete processor outputs for parent and all child tasks
+        query = db.processor_outputs_table.delete().where(db.processor_outputs_table.c.task_id.in_(all_task_ids))
+        await db.database.execute(query)
+
+        # Delete processor logs for parent and all child tasks
+        query = db.processor_logs_table.delete().where(db.processor_logs_table.c.task_id.in_(all_task_ids))
+        await db.database.execute(query)
+
+        # Delete task events for parent and all child tasks
+        query = db.task_events.delete().where(db.task_events.c.task_id.in_(all_task_ids))
+        await db.database.execute(query)
+
+        # Delete any child tasks (tasks that have this task as parent)
+        query = db.tasks_table.delete().where(db.tasks_table.c.parent_id == task_id)
+        await db.database.execute(query)
+
+        # Delete the task itself
+        query = db.tasks_table.delete().where(db.tasks_table.c.id == task_id)
+        result = await db.database.execute(query)
+
+        logger.info(f"Deleted task {task_id} and all related records")
+        return JSONResponse({"ok": "", "deleted": task_id})
+
+    except Exception as e:
+        logger.exception(f"Error deleting task {task_id}: {e}")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
 ###################################################################################
 # Main entry function
 ###################################################################################

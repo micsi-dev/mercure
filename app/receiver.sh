@@ -12,16 +12,39 @@ fi
 echo ""
 binary=bin/getdcmtags
 
+# Detect architecture for proper binary selection
+ARCH=$(uname -m)
+echo "Detected architecture: $ARCH"
+
 if [[ ! -f "$binary" ]] ; then
-    if [[ $(lsb_release -rs) == "24.04" ]]; then 
+    # Get Ubuntu version if available
+    UBUNTU_VERSION=""
+    if command -v lsb_release &> /dev/null; then
+        UBUNTU_VERSION=$(lsb_release -rs)
+    fi
+
+    # Select binary based on Ubuntu version
+    if [[ "$UBUNTU_VERSION" == "24.04" ]]; then
         binary=bin/ubuntu24.04/getdcmtags
-    elif [[ $(lsb_release -rs) == "22.04" ]]; then 
+    elif [[ "$UBUNTU_VERSION" == "22.04" ]]; then
         binary=bin/ubuntu22.04/getdcmtags
-    elif [[ $(lsb_release -rs) == "20.04" ]]; then 
+    elif [[ "$UBUNTU_VERSION" == "20.04" ]]; then
         binary=bin/ubuntu20.04/getdcmtags
-    elif [[ $(lsb_release -rs) == "18.04" ]]; then 
+    elif [[ "$UBUNTU_VERSION" == "18.04" ]]; then
         binary=bin/ubuntu18.04/getdcmtags
-    fi 
+    fi
+
+    # Check if the selected binary exists and matches architecture
+    if [[ -f "$binary" ]]; then
+        BINARY_ARCH=$(file "$binary" 2>/dev/null | grep -o 'x86-64\|aarch64\|ARM' | head -1)
+        if [[ "$ARCH" == "aarch64" || "$ARCH" == "arm64" ]]; then
+            if [[ "$BINARY_ARCH" != "aarch64" && "$BINARY_ARCH" != "ARM" ]]; then
+                echo "WARNING: Binary is $BINARY_ARCH but system is $ARCH"
+                echo "NOTE: You may need to rebuild getdcmtags for ARM64"
+                echo "NOTE: Run: cd getdcmtags && ./build.sh"
+            fi
+        fi
+    fi
 fi
 if [[ -f "$binary" ]] ; then
     echo "getdcmtags binary at '$binary'"

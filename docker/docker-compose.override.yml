@@ -27,6 +27,7 @@ services:
   ui:
     image: mercureimaging/mercure-ui${IMAGE_TAG}
     <<: [*env, *volumes-docker]
+    user: root
 
   cleaner:
     image: mercureimaging/mercure-cleaner${IMAGE_TAG}
@@ -39,6 +40,7 @@ services:
   processor:
     image: mercureimaging/mercure-processor${IMAGE_TAG}
     <<: [*env, *volumes-docker]
+    user: root
 
   router:
     image: mercureimaging/mercure-router${IMAGE_TAG}
@@ -86,7 +88,7 @@ volumes:
     driver_opts:
       type: 'none'
       o: 'bind'
-      device: 'MERCURE_SRC'
+      device: '/Users/benaron/mercure/app'
 
   data:
     driver: local
