@@ -68,6 +68,8 @@ class FakeDockerContainer:
 
     def logs(self, **kwargs):
         test_string = "Log output"
+        if kwargs.get("stream"):
+            return [test_string.encode(encoding="utf8")]
         return test_string.encode(encoding="utf8")
 
     def remove(self):

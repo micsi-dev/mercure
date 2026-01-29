@@ -59,6 +59,9 @@ mercure_defaults = {
     "series_complete_trigger": 60,  # in seconds
     "study_complete_trigger": 900,  # in seconds
     "study_forcecomplete_trigger": 5400,  # in seconds
+    "patient_complete_trigger": 7200,  # in seconds (2 hours)
+    "patient_forcecomplete_trigger": 86400,  # in seconds (24 hours)
+    "patients_folder": "/opt/mercure/data/patients",
     "dicom_receiver": {"additional_tags": []},
     "graphite_ip": "",
     "graphite_port": 2003,

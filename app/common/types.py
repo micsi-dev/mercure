@@ -175,6 +175,46 @@ class DummyTarget(Target):
     target_type: Literal["dummy"] = "dummy"
 
 
+# Whitelist of Docker argument keys that users may set via Modules configuration.
+# Any key NOT in this set will be stripped before the container is created.
+# This prevents privilege-escalation vectors such as "privileged", "pid_mode",
+# "cap_add", "devices", "ipc_mode", "userns_mode", etc.
+DOCKER_ARGUMENTS_WHITELIST: frozenset[str] = frozenset({
+    "command",
+    "entrypoint",
+    "working_dir",
+    "runtime",          # e.g. "nvidia" for GPU support
+    "mem_limit",
+    "memswap_limit",
+    "cpu_count",
+    "cpu_percent",
+    "cpus",
+    "nano_cpus",
+    "shm_size",
+    "labels",
+    "healthcheck",
+    "log_config",
+    "restart_policy",
+    "stdin_open",
+    "tty",
+    "hostname",
+    "domainname",
+    "stop_signal",
+    "stop_grace_period",
+})
+
+
+def filter_docker_arguments(arguments: dict) -> dict:
+    """Return only whitelisted keys from a docker arguments dict."""
+    blocked = set(arguments.keys()) - DOCKER_ARGUMENTS_WHITELIST
+    if blocked:
+        import logging
+        logging.getLogger(__name__).warning(
+            f"Blocked disallowed Docker argument keys: {blocked}"
+        )
+    return {k: v for k, v in arguments.items() if k in DOCKER_ARGUMENTS_WHITELIST}
+
+
 class Module(BaseModel, Compat):
     docker_tag: Optional[str] = ""
     additional_volumes: Optional[str] = ""

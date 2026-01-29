@@ -241,7 +241,8 @@ async def docker_runtime(task: Task, folder: Path, file_count_begin: int, task_p
     unbuffered_environment = dict(PYTHONUNBUFFERED="1")
 
     environment = {**module_environment, **mercure_environment, **monai_environment, **unbuffered_environment}
-    arguments = decode_task_json(module.docker_arguments)
+    from common.types import filter_docker_arguments
+    arguments = filter_docker_arguments(decode_task_json(module.docker_arguments))
 
     lock_id = str(uuid.uuid1())
     persistence_lock_file: Optional[Path] = None
