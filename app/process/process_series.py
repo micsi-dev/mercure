@@ -484,7 +484,7 @@ async def docker_runtime(task: Task, folder: Path, file_count_begin: int, task_p
                 logger.info(f"Module {task_processing.module_name} using network mode: {network_mode}")
 
         # Configure container runtime security (least privilege)
-        security_config = {}
+        security_config: dict = {}
 
         # Drop all capabilities by default for non-root containers
         if not module.requires_root:

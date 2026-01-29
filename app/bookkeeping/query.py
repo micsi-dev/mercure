@@ -172,7 +172,7 @@ async def get_task_process_logs(request) -> JSONResponse:
     """
     task_id = request.query_params.get("task_id", "")
 
-    async def get_logs_for_task(tid):
+    async def get_logs_for_task(tid: str) -> list:
         subtask_query = (
             db.tasks_table.select()
             .order_by(db.tasks_table.c.id)
@@ -227,6 +227,8 @@ async def get_task_process_logs(request) -> JSONResponse:
     # Find parent task (patient or study) with same MRN within time window
     if isinstance(task_time, str):
         task_time = datetime.datetime.fromisoformat(task_time.replace('Z', '+00:00'))
+    if task_time is None:
+        return CustomJSONResponse([])
     time_start = task_time - datetime.timedelta(minutes=10)
     time_end = task_time + datetime.timedelta(minutes=5)
 
@@ -303,6 +305,8 @@ async def get_task_process_results(request) -> JSONResponse:
     # Find parent task (patient or study) with same MRN within time window
     if isinstance(task_time, str):
         task_time = datetime.datetime.fromisoformat(task_time.replace('Z', '+00:00'))
+    if task_time is None:
+        return CustomJSONResponse([])
     time_start = task_time - datetime.timedelta(minutes=10)
     time_end = task_time + datetime.timedelta(minutes=5)
 
@@ -960,6 +964,8 @@ async def find_output_folder(request) -> JSONResponse:
     # Calculate time window (task_time should already be a datetime from the query)
     if isinstance(task_time, str):
         task_time = datetime.datetime.fromisoformat(task_time.replace('Z', '+00:00'))
+    if task_time is None:
+        return CustomJSONResponse({"task_id": task_id, "location": None, "exists": False})
     time_start = task_time - datetime.timedelta(minutes=10)
     time_end = task_time + datetime.timedelta(minutes=5)
 

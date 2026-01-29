@@ -9,7 +9,7 @@ import typing
 from io import TextIOWrapper
 from os import PathLike
 # Standard python includes
-from typing import Any, Dict, List, Optional, Type, Union, cast
+from typing import Any, Dict, FrozenSet, List, Optional, Type, Union, cast
 
 from common.event_types import FailStage
 from pydantic import BaseModel
@@ -179,7 +179,7 @@ class DummyTarget(Target):
 # Any key NOT in this set will be stripped before the container is created.
 # This prevents privilege-escalation vectors such as "privileged", "pid_mode",
 # "cap_add", "devices", "ipc_mode", "userns_mode", etc.
-DOCKER_ARGUMENTS_WHITELIST: frozenset[str] = frozenset({
+DOCKER_ARGUMENTS_WHITELIST: FrozenSet[str] = frozenset({
     "command",
     "entrypoint",
     "working_dir",
