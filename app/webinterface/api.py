@@ -36,7 +36,7 @@ class LRUCache:
     def _is_expired(self, entry: Dict[str, Any]) -> bool:
         """Check if a cache entry has expired."""
         import time
-        return (time.time() - entry['timestamp']) > self.max_age_seconds
+        return bool((time.time() - entry['timestamp']) > self.max_age_seconds)
 
     def get(self, key: str) -> Any:
         import time
@@ -430,7 +430,7 @@ async def get_task_dicom_files(request):
                                 "is_pdf": is_pdf
                             }
                         if series_uid in series_map:
-                            series_map[series_uid]["instance_count"] = int(series_map[series_uid]["instance_count"]) + 1
+                            series_map[series_uid]["instance_count"] = int(str(series_map[series_uid]["instance_count"])) + 1
 
                     except Exception as e:
                         logger.warning(f"Could not read DICOM file {file_path}: {e}")
@@ -452,10 +452,10 @@ async def get_task_dicom_files(request):
                     })
 
         # Sort by instance number
-        files.sort(key=lambda x: int(x["instance_number"]))
+        files.sort(key=lambda x: int(str(x["instance_number"])))
 
         # Build series list sorted by series number
-        series_list = sorted(series_map.values(), key=lambda x: int(x["series_number"]))
+        series_list = sorted(series_map.values(), key=lambda x: int(str(x["series_number"])))
 
         return JSONResponse({
             "files": files,
@@ -550,7 +550,7 @@ async def get_task_dicom_slices(request):
                     })
 
         # Sort by instance number
-        all_files.sort(key=lambda x: int(x["instance_number"]))
+        all_files.sort(key=lambda x: int(str(x["instance_number"])))
 
         # Get the slice range
         total = len(all_files)
@@ -984,7 +984,7 @@ def load_mpr_volume(task_id: str, series_uid: Optional[str], output_folder: Path
     volume_cache_key = f"{task_id}_{series_uid}"
     cached = mpr_volume_cache.get(volume_cache_key)
     if cached is not None:
-        return cached
+        return cached  # type: ignore[return-value]
 
     # Load all DICOM files and build volume
     files_data = []
@@ -1036,12 +1036,12 @@ def load_mpr_volume(task_id: str, series_uid: Optional[str], output_folder: Path
         positions = np.array([f["image_position"] for f in files_data])
         variance = np.var(positions, axis=0)
         sort_axis = np.argmax(variance)
-        files_data.sort(key=lambda x: x["image_position"][sort_axis] if x["image_position"] else 0)
+        files_data.sort(key=lambda x: x["image_position"][sort_axis] if x["image_position"] else 0)  # type: ignore[index]
     else:
         files_data.sort(key=lambda x: (x["slice_location"], x["instance_number"]))
 
     # Load first file to get dimensions and metadata
-    first_ds = pydicom.dcmread(files_data[0]["path"])
+    first_ds = pydicom.dcmread(str(files_data[0]["path"]))
     rows = first_ds.Rows
     cols = first_ds.Columns
     num_slices = len(files_data)
@@ -1065,7 +1065,7 @@ def load_mpr_volume(task_id: str, series_uid: Optional[str], output_folder: Path
     volume: Any = np.zeros((num_slices, rows, cols), dtype=np.float32)
 
     for i, fd in enumerate(files_data):
-        ds = pydicom.dcmread(fd["path"])
+        ds = pydicom.dcmread(str(fd["path"]))
         slice_arr: Any = ds.pixel_array.astype(np.float32)
         if hasattr(ds, 'RescaleSlope'):
             slice_arr = slice_arr * float(ds.RescaleSlope)
