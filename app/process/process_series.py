@@ -244,6 +244,34 @@ async def docker_runtime(task: Task, folder: Path, file_count_begin: int, task_p
     from common.types import filter_docker_arguments
     arguments = filter_docker_arguments(decode_task_json(module.docker_arguments))
 
+    # Security validation: Block dangerous Docker flags that could bypass security controls
+    # These flags can grant container escape or host-level access
+    DANGEROUS_DOCKER_FLAGS = {
+        'privileged': 'Privileged mode grants full host access',
+        'cap_add': 'Adding capabilities can bypass security restrictions',
+        'pid_mode': 'Sharing PID namespace can expose host processes',
+        'userns_mode': 'Sharing user namespace can bypass user isolation',
+        'ipc_mode': 'Sharing IPC namespace can expose host memory',
+        'devices': 'Device access can expose host hardware',
+    }
+
+    for flag, reason in DANGEROUS_DOCKER_FLAGS.items():
+        if flag in arguments:
+            # For privileged mode, allow if requires_root is set and support_root_modules is enabled
+            if flag == 'privileged' and arguments.get('privileged') is True:
+                if not module.requires_root:
+                    raise Exception(f"docker_arguments contains '{flag}': {reason}. "
+                                    f"Set 'requires_root' to true for this module to use privileged mode.")
+                if not config.mercure.support_root_modules:
+                    raise Exception(f"docker_arguments contains '{flag}': {reason}. "
+                                    f"Enable 'support_root_modules' in configuration to use privileged mode.")
+                logger.warning(f"Module {task_processing.module_name} running in PRIVILEGED mode - "
+                               "this grants full host access!")
+            else:
+                # Block other dangerous flags entirely
+                raise Exception(f"docker_arguments contains blocked flag '{flag}': {reason}. "
+                                f"This flag is not allowed for security reasons.")
+
     lock_id = str(uuid.uuid1())
     persistence_lock_file: Optional[Path] = None
     if module.requires_persistence:
@@ -475,7 +503,7 @@ async def docker_runtime(task: Task, folder: Path, file_count_begin: int, task_p
 
         # Configure network access based on module policy
         network_config = {}
-        network_mode = getattr(module, 'network_mode', 'bridge')
+        network_mode = getattr(module, 'network_mode', 'none')
         if network_mode:
             network_config['network_mode'] = network_mode
             if network_mode == 'none':

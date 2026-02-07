@@ -228,7 +228,7 @@ class Module(BaseModel, Compat):
     requires_root: Optional[bool] = False
     requires_persistence: Optional[bool] = False
     persistence_folder_name: Optional[str] = ""
-    network_mode: Optional[str] = "bridge"  # "none", "bridge", or custom network name
+    network_mode: Optional[str] = "none"  # "none", "bridge", or custom network name
 
 
 class UnsetRule(TypedDict):
