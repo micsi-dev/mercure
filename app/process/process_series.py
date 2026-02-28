@@ -217,7 +217,7 @@ async def docker_runtime(task: Task, folder: Path, file_count_begin: int, task_p
 
     container_in_dir = "/tmp/data"
     container_out_dir = "/tmp/output"
-    default_mounts = [Mount(source=str(real_folder/"in"), target=container_in_dir, type="bind"),
+    default_mounts = [Mount(source=str(real_folder/"in"), target=container_in_dir, type="bind", read_only=True),
                       Mount(source=str(real_folder/"out"), target=container_out_dir, type="bind")]
 
     logger.debug(default_mounts)
