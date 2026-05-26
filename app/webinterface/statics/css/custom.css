@@ -19,19 +19,19 @@
 
 .navbar.is-black .navbar-start > a.navbar-item:hover,
 .navbar.is-black .navbar-item.has-dropdown:hover .navbar-link {
-  background-color: hsl(141, 71%, 48%);
+  background-color: #B03554;
   color: #fff !important;
 }
 
 .brand {
-  color: hsl(141, 71%, 48%) !important;
+  color: #B03554 !important;
 }
 
 .footer {
   margin-top: 64px;
   padding: 32px;
   background-color: hsl(0, 0%, 21%);
-  border-top: 3px solid hsl(141, 71%, 48%);
+  border-top: 3px solid #B03554;
   color: hsl(0, 0%, 96%);
 }
 
@@ -40,11 +40,11 @@ html {
 }
 
 .footer a {
-  color: hsl(141, 71%, 48%);
+  color: #B03554;
 }
 
 .logtabs li.is-active a {
-  color: hsl(141, 71%, 48%) !important;
+  color: #B03554 !important;
   font-weight: 500;
 }
 
@@ -63,7 +63,7 @@ body {
 }
 
 .quickviewtitle {
-  background-color: hsl(141, 71%, 48%) !important;
+  background-color: #B03554 !important;
   color: #fff !important;
   font-weight: 900 !important;
 }
@@ -115,7 +115,7 @@ body {
 }
 
 .logviewer::-webkit-scrollbar-thumb {
-  background: hsl(141, 71%, 48%);
+  background: #B03554;
   border-radius: 10px;
   border: 4px solid transparent;
   background-clip: content-box;  
@@ -140,8 +140,8 @@ body {
 }
 
 .tabs li.is-active a {
-  border-bottom-color: hsl(141, 71%, 48%);
-  color: hsl(141, 71%, 48%);
+  border-bottom-color: #B03554;
+  color: #B03554;
 }
 
 .tabs.is-toggle li.is-active a {
@@ -168,7 +168,7 @@ body {
 }
 
 ::selection {
-  background-color: hsl(141, 71%, 48%);
+  background-color: #B03554;
   color: #fff;
 }
 
@@ -202,7 +202,7 @@ body {
 }
 
 .jobtable tr.is-selected {
-  background-color: hsl(141, 71%, 48%);
+  background-color: #B03554;
 }
 
 .jobstabs a {
@@ -268,11 +268,11 @@ body {
 }
 
 .greenlink {
-  color: hsl(141, 71%, 48%);
+  color: #B03554;
 }
 
 .loadingspinner {
-  color: hsl(141, 71%, 48%);
+  color: #B03554;
   text-align: center;
 }
 
@@ -348,7 +348,7 @@ table.dataTable tbody tr.selected th, table.dataTable tbody tr.selected td {
 }
 
 .taskinfotextarea::-webkit-scrollbar-thumb:hover {
-  background: hsl(141, 71%, 48%);
+  background: #B03554;
 }
 
 .ruletesterdashed {
@@ -905,7 +905,7 @@ tr:hover td.dt-control::before {
 }
 
 .control-section-title {
-  color: hsl(141, 71%, 48%);
+  color: #B03554;
   font-size: 13px;
   font-weight: bold;
   margin-top: 15px;
@@ -948,7 +948,7 @@ tr:hover td.dt-control::before {
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: hsl(141, 71%, 48%);
+  background: #B03554;
   cursor: pointer;
 }
 
@@ -956,7 +956,7 @@ tr:hover td.dt-control::before {
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: hsl(141, 71%, 48%);
+  background: #B03554;
   cursor: pointer;
   border: none;
 }
@@ -972,8 +972,8 @@ tr:hover td.dt-control::before {
 }
 
 .control-panel input[type="number"]:focus {
-  border-color: hsl(141, 71%, 48%);
-  box-shadow: 0 0 0 1px hsl(141, 71%, 48%);
+  border-color: #B03554;
+  box-shadow: 0 0 0 1px #B03554;
 }
 
 .tool-buttons {
@@ -989,8 +989,8 @@ tr:hover td.dt-control::before {
 }
 
 .tool-btn.is-active {
-  background-color: hsl(141, 71%, 48%) !important;
-  border-color: hsl(141, 71%, 48%) !important;
+  background-color: #B03554 !important;
+  border-color: #B03554 !important;
 }
 
 .volume-info {
@@ -1021,7 +1021,7 @@ tr:hover td.dt-control::before {
 
 /* Focused viewport indicator */
 .viewport-container.is-focused {
-  outline: 2px solid hsl(141, 71%, 48%);
+  outline: 2px solid #B03554;
   outline-offset: -2px;
 }
 
@@ -1031,8 +1031,8 @@ tr:hover td.dt-control::before {
 }
 
 .view-layout-buttons .button.is-active {
-  background-color: hsl(141, 71%, 48%) !important;
-  border-color: hsl(141, 71%, 48%) !important;
+  background-color: #B03554 !important;
+  border-color: #B03554 !important;
 }
 
 /* Single view mode */
