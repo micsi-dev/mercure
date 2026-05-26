@@ -239,11 +239,12 @@ if [[ "$IS_ARM64" == true ]] || [[ "$BUILD_IMAGES" == true ]]; then
     cd "$MERCURE_ROOT"
 
     echo_info "Building base image..."
-    docker build -t mercureimaging/mercure-base:latest -f docker/base/Dockerfile .
+    docker build -t mercure-base:latest -f docker/base/Dockerfile .
 
     for service in ui bookkeeper receiver cleaner dispatcher processor router worker; do
         echo_info "Building $service image..."
-        docker build -t "mercureimaging/mercure-$service:latest" -f "docker/$service/Dockerfile" .
+        docker build --build-arg IMAGE_NAME=mercure-base --build-arg VERSION_TAG=latest \
+            -t "mercure-$service:latest" -f "docker/$service/Dockerfile" .
     done
 
     echo_info "All images built successfully."

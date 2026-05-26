@@ -1,9 +1,12 @@
 # Docker Compose override for macOS (including Apple Silicon)
-# Usage: docker compose -f docker-compose.yml -f docker-compose.mac.yml up -d
+# Usage: docker compose -f docker-compose.yml -f docker-compose.mac.yml up -d --build
 #
 # This file addresses Mac-specific issues:
 # 1. Docker socket permissions (requires root for UI/processor)
 # 2. User/group mapping differences on macOS
+# 3. Builds all images locally to ensure native ARM64 binaries (e.g., getdcmtags)
+#    and that the latest source code is always used
+# 4. Uses local image names to avoid pulling from upstream Docker Hub
 
 x-env: &env
   environment:
@@ -23,47 +26,131 @@ x-volumes-docker: &volumes-docker
     - data:/opt/mercure/data
     - /var/run/docker.sock:/var/run/docker.sock
 
+x-local-build: &local-build
+  args:
+    IMAGE_NAME: mercure-base
+    VERSION_TAG: latest
+
 services:
-  # UI needs root access to Docker socket on macOS
+  # Builds the shared base image used by all mercure services.
+  # Exits immediately after build — it only exists to produce the base image.
+  base:
+    build:
+      context: ..
+      dockerfile: docker/base/Dockerfile
+    image: mercure-base:latest
+    pull_policy: never
+    command: ["true"]
+
   ui:
     <<: [*env, *volumes-docker]
-    image: mercureimaging/mercure-ui${IMAGE_TAG:-:latest}
+    build:
+      context: ..
+      dockerfile: docker/ui/Dockerfile
+      <<: *local-build
+    image: mercure-ui:latest
+    pull_policy: never
     user: root
+    depends_on:
+      base:
+        condition: service_completed_successfully
 
-  # Processor needs root access to Docker socket on macOS
   processor:
     <<: [*env, *volumes-docker]
-    image: mercureimaging/mercure-processor${IMAGE_TAG:-:latest}
+    build:
+      context: ..
+      dockerfile: docker/processor/Dockerfile
+      <<: *local-build
+    image: mercure-processor:latest
+    pull_policy: never
     user: root
+    depends_on:
+      base:
+        condition: service_completed_successfully
 
-  # Other services can run without special user settings on Mac
   receiver:
     <<: [*env, *volumes]
-    image: mercureimaging/mercure-receiver${IMAGE_TAG:-:latest}
+    build:
+      context: ..
+      dockerfile: docker/receiver/Dockerfile
+      <<: *local-build
+    image: mercure-receiver:latest
+    pull_policy: never
+    depends_on:
+      base:
+        condition: service_completed_successfully
 
   cleaner:
     <<: [*env, *volumes]
-    image: mercureimaging/mercure-cleaner${IMAGE_TAG:-:latest}
+    build:
+      context: ..
+      dockerfile: docker/cleaner/Dockerfile
+      <<: *local-build
+    image: mercure-cleaner:latest
+    pull_policy: never
+    depends_on:
+      base:
+        condition: service_completed_successfully
 
   dispatcher:
     <<: [*env, *volumes]
-    image: mercureimaging/mercure-dispatcher${IMAGE_TAG:-:latest}
+    build:
+      context: ..
+      dockerfile: docker/dispatcher/Dockerfile
+      <<: *local-build
+    image: mercure-dispatcher:latest
+    pull_policy: never
+    depends_on:
+      base:
+        condition: service_completed_successfully
 
   router:
     <<: [*env, *volumes]
-    image: mercureimaging/mercure-router${IMAGE_TAG:-:latest}
+    build:
+      context: ..
+      dockerfile: docker/router/Dockerfile
+      <<: *local-build
+    image: mercure-router:latest
+    pull_policy: never
+    depends_on:
+      base:
+        condition: service_completed_successfully
 
   bookkeeper:
     <<: [*env, *volumes]
-    image: mercureimaging/mercure-bookkeeper${IMAGE_TAG:-:latest}
+    build:
+      context: ..
+      dockerfile: docker/bookkeeper/Dockerfile
+      <<: *local-build
+    image: mercure-bookkeeper:latest
+    pull_policy: never
+    depends_on:
+      base:
+        condition: service_completed_successfully
 
   worker_fast:
     <<: *volumes
-    image: mercureimaging/mercure-worker${IMAGE_TAG:-:latest}
+    build:
+      context: ..
+      dockerfile: docker/worker/Dockerfile
+      <<: *local-build
+    image: mercure-worker:latest
+    pull_policy: never
+    depends_on:
+      base:
+        condition: service_completed_successfully
 
   worker_slow:
     <<: *volumes
-    image: mercureimaging/mercure-worker${IMAGE_TAG:-:latest}
+    build:
+      context: ..
+      dockerfile: docker/worker/Dockerfile
+      <<: *local-build
+    image: mercure-worker:latest
+    pull_policy: never
+    depends_on:
+      base:
+        condition: service_completed_successfully
 
 volumes:
   db-data:
