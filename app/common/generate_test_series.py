@@ -50,7 +50,7 @@ def nums(n: int, source: Optional[str] = None) -> str:
     if not source:
         return "".join(random.choice(string.digits) for i in range(n))
     else:
-        return "".join([str(int(x)) for x in hashlib.md5(source.encode()).digest()])[0:n]
+        return "".join([str(int(x)) for x in hashlib.md5(source.encode(), usedforsecurity=False).digest()])[0:n]
 
 
 dt = datetime.datetime.now()
