@@ -144,7 +144,11 @@ def verify_container_signature(docker_tag: str, module: Module) -> bool:
 
         # Run cosign verify in container
         # No Docker socket mount needed - cosign verifies against registry directly
-        # No ~/.cosign mount needed - using keyless OIDC verification via public Sigstore infrastructure
+        # Keyless OIDC verification needs no signing keys (~/.cosign), but cosign
+        # still pulls the manifest + signature from the registry — which requires
+        # authentication for PRIVATE repos. Mount the mercure user's Docker Hub
+        # credentials and run the container as root so the mode-0600 config is
+        # readable inside the chainguard/cosign image. (Harmless for public repos.)
         container = docker_client.containers.run(
             cosign_image,
             command=[
@@ -153,6 +157,13 @@ def verify_container_signature(docker_tag: str, module: Module) -> bool:
                 "--certificate-identity", cert_identity,
                 "--certificate-oidc-issuer", cert_oidc_issuer,
             ],
+            volumes={
+                "/home/mercure/.docker/config.json": {
+                    "bind": "/cosign-docker/config.json", "mode": "ro",
+                },
+            },
+            environment={"DOCKER_CONFIG": "/cosign-docker"},
+            user="0",
             remove=False,  # Keep container to retrieve logs on failure
             detach=True,
         )
