@@ -58,8 +58,10 @@
   }
 
   // --- 2. widen the archive table to the MICSI column set -------------------
+  // 9 columns, matching the `columns` array below. The first is the dt-control
+  // expander and carries no header text.
   var MICSI_ARCHIVE_HEAD =
-    "<tr><th></th><th></th><th>ACC</th><th>MRN</th><th>UID</th>" +
+    "<tr><th></th><th>ACC</th><th>MRN</th><th>UID</th>" +
     "<th>Scope</th><th>Rule</th><th>Time</th><th>Files</th><th>ID</th></tr>";
 
   function rebuildArchiveTable() {

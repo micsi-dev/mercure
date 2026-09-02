@@ -371,3 +371,34 @@
   color: #7a7a7a;}
 
 .series-count {color: #4a4a4a;}
+
+/* --------------------------------------------------------------------------
+ * 3. Archive table column widths
+ *
+ * .jobtable sets table-layout: fixed with `width: 20%` on every cell — a rule
+ * written for a five-column table. The MICSI archive view has nine, so every
+ * column ends up the same width and the two that hold long identifiers (UID
+ * and the task ID) wrap a character at a time.
+ *
+ * Scoped to #jobs_archive so the processing, routing, studies and fail tables
+ * keep upstream's sizing.
+ * ----------------------------------------------------------------------- */
+#jobs_archive { table-layout: fixed; width: 100%; }
+
+#jobs_archive th:nth-child(1), #jobs_archive td:nth-child(1) { width: 3%; }   /* expander */
+#jobs_archive th:nth-child(2), #jobs_archive td:nth-child(2) { width: 9%; }   /* ACC */
+#jobs_archive th:nth-child(3), #jobs_archive td:nth-child(3) { width: 9%; }   /* MRN */
+#jobs_archive th:nth-child(4), #jobs_archive td:nth-child(4) { width: 20%; }  /* UID */
+#jobs_archive th:nth-child(5), #jobs_archive td:nth-child(5) { width: 8%; }   /* Scope */
+#jobs_archive th:nth-child(6), #jobs_archive td:nth-child(6) { width: 10%; }  /* Rule */
+#jobs_archive th:nth-child(7), #jobs_archive td:nth-child(7) { width: 13%; }  /* Time */
+#jobs_archive th:nth-child(8), #jobs_archive td:nth-child(8) { width: 6%; }   /* Files */
+#jobs_archive th:nth-child(9), #jobs_archive td:nth-child(9) { width: 22%; }  /* ID */
+
+/* Long identifiers wrap on character boundaries rather than one glyph per line. */
+#jobs_archive td:nth-child(4),
+#jobs_archive td:nth-child(9) { word-break: break-all; white-space: normal; }
+
+/* Keep the nested child-task table readable inside the expanded row. */
+#jobs_archive .child-tasks-table { table-layout: auto; margin-bottom: 0; }
+#jobs_archive .child-tasks-table td.child-actions { white-space: nowrap; }
