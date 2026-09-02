@@ -2,6 +2,7 @@
 
 {% block title %}Rules{% endblock %}
 {% block extra_head %}
+    <script nonce="{{ csp_nonce }}" type="text/javascript" src="{{ url_for('static', path='js/micsi-rules-overlay.js') }}"></script>
 <script nonce="{{ csp_nonce }}" type="text/javascript" src="{{ url_for('static', path='/js/bulma-quickview.min.js') }}"></script>
 <script nonce="{{ csp_nonce }}" type="text/javascript" src="{{ url_for('static', path='/js/dicomParser.min.js') }}"></script>
 <script nonce="{{ csp_nonce }}" type="text/javascript" src="{{ url_for('static', path='/js/dataDictionary.js') }}"></script>
@@ -174,6 +175,10 @@
                                     <option value="study" {% if rules[rule]['action_trigger']=='study' %}selected{%
                                         endif%}>Completed
                                         Study</option>
+                                    {# MICSI: patient-level trigger. Fields render via micsi_patient_trigger.html #}
+                                    <option value="patient" {% if rules[rule]['action_trigger']=='patient' %}selected{%
+                                        endif%}>Completed
+                                        Patient</option>
                                 </select>
                             </div>
                         </div>
@@ -226,6 +231,7 @@
                             </div>
                         </div>
                     </div>
+                    {% include "micsi_patient_trigger.html" %}
                     <div class="field" style="margin-top: 40px;">
                         <label class="label">Priority</label>
                         <div class="select">
