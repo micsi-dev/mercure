@@ -219,6 +219,8 @@ class UnsetRule(TypedDict):
 
 StudyTriggerCondition = Literal["timeout", "received_series"]
 StudyForceCompletionAction = Literal["discard", "proceed", "ignore"]
+PatientTriggerCondition = Literal["timeout", "received_modalities", "received_studies", "received_series"]
+PatientForceCompletionAction = Literal["discard", "proceed", "ignore"]
 
 
 class Rule(BaseModel, Compat):
@@ -427,12 +429,36 @@ class TaskProcessing(BaseModel, Compat):
 #         return PydanticFile(cls, file_name)
 
 
+class TaskPatientStudy(BaseModel, Compat):
+    study_uid: str
+    modality: str
+    series_count: int
+    series_uids: List[str]
+    received_time: str
+
+
+class TaskPatient(BaseModel, Compat):
+    patient_id: str
+    complete_trigger: Optional[PatientTriggerCondition]
+    complete_required_modalities: str
+    complete_required_studies: str
+    complete_required_series: str
+    creation_time: str
+    last_receive_time: str
+    received_studies: Optional[List[TaskPatientStudy]]
+    received_modalities: Optional[List[str]]
+    received_series: Optional[List[str]]
+    complete_force: bool = False
+    complete_force_action: Optional[PatientForceCompletionAction] = "discard"
+
+
 class Task(BaseModel, Compat):
     info: TaskInfo
     id: str
     dispatch: Union[TaskDispatch, EmptyDict] = cast(EmptyDict, {})
     process: Union[TaskProcessing, EmptyDict, List[TaskProcessing]] = cast(EmptyDict, {})
     study: Union[TaskStudy, EmptyDict] = cast(EmptyDict, {})
+    patient: Union[TaskPatient, EmptyDict] = cast(EmptyDict, {})
     nomad_info: Optional[Any] = None
 
     class Config:
@@ -457,3 +483,7 @@ class Task(BaseModel, Compat):
 
 class TaskHasStudy(Task): 
     study: TaskStudy
+
+
+class TaskHasPatient(Task):
+    patient: TaskPatient
