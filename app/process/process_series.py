@@ -514,16 +514,6 @@ async def docker_runtime(task: Task, folder: Path, file_count_begin: int, task_p
         else:
             logger.debug("Executing module as mercure.")
 
-        # Configure network access based on module policy
-        network_config = {}
-        network_mode = getattr(module, 'network_mode', 'none')
-        if network_mode:
-            network_config['network_mode'] = network_mode
-            if network_mode == 'none':
-                logger.info(f"Module {task_processing.module_name} configured with NO network access")
-            else:
-                logger.info(f"Module {task_processing.module_name} using network mode: {network_mode}")
-
         # Configure container runtime security (least privilege)
         security_config: dict = {}
 
@@ -571,6 +561,10 @@ async def docker_runtime(task: Task, folder: Path, file_count_begin: int, task_p
         (folder / "out").chmod(0o770)
 
         network_mode = "none" if not module.network_enabled else None
+        if network_mode == "none":
+            logger.info(f"Module {task_processing.module_name} configured with NO network access")
+        else:
+            logger.info(f"Module {task_processing.module_name} has network access enabled")
 
         # Runtime enforcement: strip disallowed docker_arguments if MERCURE_FORBID_UNSAFE_DOCKER_ARGS is set
         from webinterface.modules import forbid_unsafe_docker_args, ALLOWED_DOCKER_ARGS
@@ -608,7 +602,6 @@ async def docker_runtime(task: Task, folder: Path, file_count_begin: int, task_p
             **set_command,
             **arguments,
             **user_info,
-            **network_config,
             **security_config,
             detach=True,
         )
