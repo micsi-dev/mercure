@@ -16,6 +16,7 @@ import asyncpg
 import bookkeeping.config as bk_config
 import bookkeeping.database as db
 import bookkeeping.query as query
+import bookkeeping.micsi_query as micsi_query
 import common.monitor as monitor
 import hupper
 import uvicorn
@@ -477,6 +478,9 @@ def create_app() -> Starlette:
         on_error=lambda _, exc: PlainTextResponse(str(exc), status_code=401),
     )
     app.mount("/query", query.query_app)
+    # MICSI overlay: additional query endpoints kept out of upstream's
+    # query.py so that syncing with mercure-imaging never conflicts.
+    app.mount("/query-micsi", micsi_query.micsi_query_app)
     return app
 
 

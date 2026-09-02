@@ -18,6 +18,9 @@
   <link rel="shortcut icon" href="{{ url_for('static', path='favicon.ico') }}?v=2">
   {% block extra_head %} {% endblock %}
   <link href="{{ url_for('static', path='/css/custom.css') }}?v=2" rel="stylesheet">
+  {# MICSI branding overlay. Must stay after custom.css so it wins on cascade
+     order. See statics/css/micsi-overlay.css. #}
+  <link href="{{ url_for('static', path='/css/micsi-overlay.css') }}?v=1" rel="stylesheet">
 </head>
 
 <body>
