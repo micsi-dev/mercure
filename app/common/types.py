@@ -313,6 +313,7 @@ class Config(BaseModel, Compat):
     accept_compressed_images: bool
     incoming_folder: str
     studies_folder: str
+    patients_folder: str
     outgoing_folder: str
     success_folder: str
     error_folder: str
@@ -330,6 +331,8 @@ class Config(BaseModel, Compat):
     series_complete_trigger: int    # in seconds
     study_complete_trigger: int     # in seconds
     study_forcecomplete_trigger: int  # in seconds
+    patient_complete_trigger: int   # in seconds (2 hours)
+    patient_forcecomplete_trigger: int  # in seconds (24 hours)
     dicom_receiver: DicomReceiverConfig = DicomReceiverConfig()
     graphite_ip: str
     graphite_port: int
