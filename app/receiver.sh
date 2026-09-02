@@ -170,7 +170,12 @@ fi
 echo ""
 echo "Starting receiver process on port $port, folder $incoming, bookkeeper $bookkeeper"
 
-if [ $MERCURE_TLS_ENABLED ]
+case "$(printf '%s' "${MERCURE_TLS_ENABLED:-0}" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|on) mercure_tls_on=1 ;;
+    *)             mercure_tls_on=0 ;;
+esac
+
+if [ "$mercure_tls_on" = "1" ]
 then
     echo "mercure has been configured for DICOM TLS. Starting in TLS mode."
     "$storescp_binary" $debug_flag +tls $MERCURE_TLS_KEY $MERCURE_TLS_CERT +cf $MERCURE_TLS_CA_CERT --fork --promiscuous $transfer_syntax_option -od "$incoming" +uf -xcr "$binary $incoming/#f #r #a #c$bookkeeper$bookkeeper_api_key $@" $port
