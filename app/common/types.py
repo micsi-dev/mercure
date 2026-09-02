@@ -10,7 +10,7 @@ import typing
 from io import TextIOWrapper
 from os import PathLike
 # Standard python includes
-from typing import Any, Dict, List, Optional, Type, Union, cast
+from typing import Any, Dict, FrozenSet, List, Optional, Type, Union, cast
 
 from common.event_types import FailStage
 from pydantic import BaseModel, validator
@@ -197,6 +197,74 @@ class DummyTarget(Target):
     target_type: Literal["dummy"] = "dummy"
 
 
+# Keys that may be forwarded to docker.containers.run() from a module's
+# docker_arguments. process_series applies this unconditionally, before
+# upstream's MERCURE_FORBID_UNSAFE_DOCKER_ARGS layer, so that an unrecognised
+# key can never reach the Docker API even when that env-gated layer is off.
+#
+# The set is the union of two lists that grew separately: the original MICSI
+# whitelist (command/entrypoint/working_dir and friends, which our modules use)
+# and upstream's ALLOWED_DOCKER_ARGS in webinterface/modules.py (the finer
+# grained resource knobs). Kept literal rather than imported from there:
+# webinterface.modules imports Module from this file, so importing it back
+# would be circular.
+#
+# Anything granting host access or privilege escalation -- privileged,
+# network_mode, pid, ipc, userns_mode, cap_add, devices, security_opt, volumes
+# -- is deliberately absent and must stay that way.
+DOCKER_ARGUMENTS_WHITELIST: FrozenSet[str] = frozenset({
+    # MICSI originals
+    "command",
+    "entrypoint",
+    "working_dir",
+    "runtime",          # e.g. "nvidia" for GPU support
+    "mem_limit",
+    "memswap_limit",
+    "cpu_count",
+    "cpu_percent",
+    "cpus",
+    "nano_cpus",
+    "shm_size",
+    "labels",
+    "healthcheck",
+    "log_config",
+    "restart_policy",
+    "stdin_open",
+    "tty",
+    "hostname",
+    "domainname",
+    "stop_signal",
+    "stop_grace_period",
+    # From upstream's ALLOWED_DOCKER_ARGS
+    "cpu_period",
+    "cpu_quota",
+    "cpuset_cpus",
+    "cpu_shares",
+    "cpuset_mems",
+    "blkio_weight",
+    "device_read_bps",
+    "device_write_bps",
+    "device_read_iops",
+    "device_write_iops",
+    "pids_limit",
+    "environment",
+    "env",
+    "read_only",
+    "stop_timeout",
+})
+
+
+def filter_docker_arguments(arguments: dict) -> dict:
+    """Return only whitelisted keys from a docker arguments dict."""
+    blocked = set(arguments.keys()) - DOCKER_ARGUMENTS_WHITELIST
+    if blocked:
+        import logging
+        logging.getLogger(__name__).warning(
+            f"Blocked disallowed Docker argument keys: {blocked}"
+        )
+    return {k: v for k, v in arguments.items() if k in DOCKER_ARGUMENTS_WHITELIST}
+
+
 class Module(BaseModel, Compat):
     docker_tag: Optional[str] = ""
     additional_volumes: Optional[str] = ""
@@ -364,7 +432,7 @@ class Config(BaseModel, Compat):
 class TaskInfo(BaseModel, Compat):
     action: Literal["route", "both", "process", "discard", "notification"]
     uid: str
-    uid_type: Literal["series", "study"]
+    uid_type: Literal["series", "study", "patient"]
     triggered_rules: Union[Dict[str, Literal[True]], str]
     applied_rule: Optional[str]
     patient_name: Optional[str]
