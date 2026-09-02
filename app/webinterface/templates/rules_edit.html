@@ -12,7 +12,15 @@
 {% block content %}
 <main role="main">
     <div class="container">
-        <h1 class="title is-4">Edit Rule - {{rule}}</h1>
+        <nav class="breadcrumb is-small" aria-label="breadcrumbs" style="margin-bottom: 8px;">
+            <ul>
+                <li><a class="greenlink" href="/rules">Rules</a></li>
+                <li class="is-active"><a href="#">{{rule}}</a></li>
+            </ul>
+        </nav>
+        <h1 class="title is-4">Edit Rule</h1>
+
+        <div id="pipeline-preview" class="pipeline-flow" style="margin-bottom: 12px;"></div>
 
         <div class="notification is-danger" id="erroralert" style="display: none;">
             <i class="fas fa-bug"></i>&nbsp;&nbsp;Error in configuration detected. Please check input fields for correct
@@ -166,9 +174,6 @@
                                     <option value="study" {% if rules[rule]['action_trigger']=='study' %}selected{%
                                         endif%}>Completed
                                         Study</option>
-                                    <option value="patient" {% if rules[rule]['action_trigger']=='patient' %}selected{%
-                                        endif%}>Completed
-                                        Patient</option>
                                 </select>
                             </div>
                         </div>
@@ -215,81 +220,6 @@
                                     </option>
                                     <option value="ignore" {% if
                                         rules[rule]['study_force_completion_action']=='ignore' %}selected{% endif%}>
-                                        Ignore Timeout and Wait
-                                    </option>
-                                </select>
-                            </div>
-                        </div>
-                    </div>
-                    <div class="field" id="patient_trigger_field">
-                        <label class="label">Patient Completion Condition</label>
-                        <div class="field has-addons">
-                            <div class="select">
-                                <select name="patient_trigger_condition" id="patient_trigger_condition">
-                                    <option value="timeout" {% if rules[rule]['patient_trigger_condition']=='timeout'
-                                        %}selected{% endif%}>Timeout Reached
-                                    </option>
-                                    <option value="received_modalities" {% if
-                                        rules[rule]['patient_trigger_condition']=='received_modalities' %}selected{% endif%}>
-                                        Listed Modalities Received
-                                    </option>
-                                    <option value="received_studies" {% if
-                                        rules[rule]['patient_trigger_condition']=='received_studies' %}selected{% endif%}>
-                                        Listed Studies Received
-                                    </option>
-                                    <option value="received_series" {% if
-                                        rules[rule]['patient_trigger_condition']=='received_series' %}selected{% endif%}>
-                                        Listed Series Received
-                                    </option>
-                                </select>
-                            </div>
-                            <div class="control is-expanded" style="margin-left: 10px;">
-                                <div class="field has-addons" id="patient_trigger_modalities_section">
-                                    <input name="patient_trigger_modalities" id="patient_trigger_modalities" pattern="[^{}\x22]+"
-                                        class="input series_completion_fix" autocomplete='off' type="text"
-                                        placeholder="Modalities required (e.g., 'PT' and 'MR')"
-                                        value="{{rules[rule]['patient_trigger_modalities']}}">
-                                </div>
-                                <div class="field has-addons" id="patient_trigger_studies_section" style="display:none;">
-                                    <input name="patient_trigger_studies" id="patient_trigger_studies" pattern="[^{}\x22]+"
-                                        class="input series_completion_fix" autocomplete='off' type="text"
-                                        placeholder="Studies required for completion"
-                                        value="{{rules[rule]['patient_trigger_studies']}}">
-                                </div>
-                                <div class="field has-addons" id="patient_trigger_series_section" style="display:none;">
-                                    <input name="patient_trigger_series" id="patient_trigger_series" pattern="[^{}\x22]+"
-                                        class="input series_completion_fix" autocomplete='off' type="text"
-                                        placeholder="Series required (e.g., 'T1' and 'T2')"
-                                        value="{{rules[rule]['patient_trigger_series']}}">
-                                </div>
-                            </div>
-                        </div>
-                        <div class="field" style="margin-top: 10px;">
-                            <label class="label">Patient Completion Timeout (seconds)</label>
-                            <div class="control">
-                                <input name="patient_trigger_timeout" id="patient_trigger_timeout" class="input"
-                                    type="number" min="60" step="60"
-                                    placeholder="Timeout in seconds (default: 7200 = 2 hours)"
-                                    value="{{rules[rule].get('patient_trigger_timeout', 7200)}}">
-                            </div>
-                            <p class="help">Time to wait for additional studies after the last study is received</p>
-                        </div>
-                    </div>
-                    <div class="field" id="force_patient_completion_field">
-                        <label class="label">Action for Incomplete Patients</label>
-                        <div class="select">
-                            <div class="control">
-                                <select name="patient_force_completion_action" id="patient_force_completion_action">
-                                    <option value="discard" {% if
-                                        rules[rule]['patient_force_completion_action']=='discard' %}selected{% endif%}>
-                                        Discard Patient
-                                    </option>
-                                    <option value="proceed" {% if
-                                        rules[rule]['patient_force_completion_action']=='proceed' %}selected{% endif%}>
-                                        Proceed with Received Studies
-                                    </option>
-                                    <option value="ignore" {% if
-                                        rules[rule]['patient_force_completion_action']=='ignore' %}selected{% endif%}>
                                         Ignore Timeout and Wait
                                     </option>
                                 </select>
@@ -385,7 +315,7 @@
                             class="switch is-rounded is-dark" value="True" {% if
                             rules[rule]['processing_retain_images']==True %}checked="checked" {% endif%}>
                         <label for="processing_retain_images">Retain Input Images</label>
-                    </div>                    
+                    </div>
                 </div>
                 <div class="panel" data-content="routing">
                     <div class="field">
@@ -399,6 +329,25 @@
                                 </select>
                             </div>
                         </div>
+                    </div>
+                    <div class="field" style="margin-top: 25px;">
+                        <label class="label">Conditional Alternate Target</label>
+                        <input id="use_alternate_target" type="checkbox" name="use_alternate_target"
+                            class="switch is-rounded is-dark" value="True"
+                            {% if rules[rule]['conditional_alternate_target'] %}checked="checked"{% endif %}>
+                        <label for="use_alternate_target">Route to alternate target when module sets condition flag</label>
+                    </div>
+                    <div class="field" id="alternate_target_field" style="display: none;">
+                        <label class="label">Alternate Target</label>
+                        <div class="control">
+                            <select id="conditional_alternate_target" name="conditional_alternate_target">
+                                <option value="" placeholder>Select alternate target</option>
+                                {% for t in targets %}
+                                <option value="{{t}}" {% if rules[rule]['conditional_alternate_target'] == t %}selected{% endif %}>{{ t }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <p class="help">Module writes <code>{"__mercure_routing": {"use_alternate_target": true}}</code> in result.json to trigger this.</p>
                     </div>
                 </div>
                 <div class="panel" data-content="notification" style="margin-top: 30px;">
@@ -656,12 +605,19 @@
         return true;
     }
     $('form').on('submit', validate);
-    $('#rule').on('keyup', (evt)=> evt.target.value = evt.target.value.replace(/[{}\n]/g, ''))
-    $('#study_trigger_series').on('keyup', (evt)=> evt.target.value = evt.target.value.replace(/[{}\x22\n]/g, ''))
-    $('#patient_trigger_modalities').on('keyup', (evt)=> evt.target.value = evt.target.value.replace(/[{}\x22\n]/g, ''))
-    $('#patient_trigger_studies').on('keyup', (evt)=> evt.target.value = evt.target.value.replace(/[{}\x22\n]/g, ''))
-    $('#patient_trigger_series').on('keyup', (evt)=> evt.target.value = evt.target.value.replace(/[{}\x22\n]/g, ''))
-    
+    $('#rule').on('keyup input paste', (evt)=> evt.target.value = evt.target.value.replace(/[{}\n]/g, ''))
+    $('#study_trigger_series').on('keyup input paste', (evt)=> evt.target.value = evt.target.value.replace(/[{}\x22\n]/g, ''))
+
+    function toggleAlternateTarget() {
+        if ($('#use_alternate_target').is(':checked')) {
+            $('#alternate_target_field').show();
+        } else {
+            $('#alternate_target_field').hide();
+        }
+    }
+    $('#use_alternate_target').on('change', toggleAlternateTarget);
+    toggleAlternateTarget();
+
     function toggleTestRule() {
         if($("#testrule").is(":visible")) {
             $("#testrule").hide();
@@ -696,14 +652,16 @@
     $('#closetestcompletionseries').click(closeTestCompletionSeries);
 
     function copyTag(value) {
-        $("#copyinput").val(value);
-        $("#copyinput").css("display", "block");
-
-        var copyText = document.getElementById("copyinput");
-        copyText.select();
-        document.execCommand("copy");
-
-        $("#copyinput").css("display", "none");
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(value);
+        } else {
+            $("#copyinput").val(value);
+            $("#copyinput").css("display", "block");
+            var copyText = document.getElementById("copyinput");
+            copyText.select();
+            document.execCommand("copy");
+            $("#copyinput").css("display", "none");
+        }
     }
     $('.tag-copy').click((evt)=>copyTag(evt.target.value))
     $(function () {
@@ -746,10 +704,18 @@
         var targetSelector = new Choices('#target', {
           removeItemButton: true, searchEnabled: true,
           placeholder: true,
-          placeholderValue: "Click to select target(s)",          
+          placeholderValue: "Click to select target(s)",
           noResultsText: 'No matching targets found',
-          noChoicesText: 'No other targets to choose from',          
-        });        
+          noChoicesText: 'No other targets to choose from',
+        });
+
+        var alternateTargetSelector = new Choices('#conditional_alternate_target', {
+          searchEnabled: true,
+          placeholder: true,
+          placeholderValue: "Select alternate target",
+          noResultsText: 'No matching targets found',
+          shouldSort: false,
+        });
 
         var quickviews = bulmaQuickview.attach();
 
@@ -763,7 +729,15 @@
 
             $('#tab-content div.panel').removeClass('is-active');
             $('div.panel[data-content="' + tab + '"]').addClass('is-active');
+            history.replaceState(null, '', '#' + tab);
         });
+
+        // Restore tab from URL hash on load
+        if (location.hash) {
+            var tab = location.hash.substring(1);
+            var tabItem = $('#tabs li[data-tab="' + tab + '"]');
+            if (tabItem.length) { tabItem.click(); }
+        }
 
         $('#add-module').click(function() {
             bulmaTagsInstances[0].addTag($("#processing_module").val());
@@ -793,27 +767,15 @@
         $('#action_trigger').change(function () {
             var action_trigger = $(this).children("option:selected").val();
             var study_trigger = $('#study_trigger_condition').children("option:selected").val();
-            var patient_trigger = $('#patient_trigger_condition').children("option:selected").val();
-
             if (action_trigger == 'series') {
                 $('#study_trigger_field').hide();
                 $("#force_study_completion_field").hide();
-                $('#patient_trigger_field').hide();
-                $("#force_patient_completion_field").hide();
                 $('#study_trigger_series').prop('required', false);
-            } else if (action_trigger == 'study') {
+            } else {
                 $('#study_trigger_field').show();
-                $('#patient_trigger_field').hide();
-                $("#force_patient_completion_field").hide();
                 if (study_trigger == 'received_series') {
                     $("#force_study_completion_field").show();
                 }
-            } else if (action_trigger == 'patient') {
-                $('#study_trigger_field').hide();
-                $("#force_study_completion_field").hide();
-                $('#patient_trigger_field').show();
-                $("#force_patient_completion_field").show();
-                $('#study_trigger_series').prop('required', false);
             }
         });
 
@@ -831,44 +793,83 @@
             }
         });
 
-        $('#patient_trigger_condition').change(function () {
-            var patient_trigger = $(this).children("option:selected").val();
-
-            if (patient_trigger == 'timeout') {
-                $('#patient_trigger_modalities_section').hide();
-                $('#patient_trigger_studies_section').hide();
-                $('#patient_trigger_series_section').hide();
-                $('#patient_trigger_modalities').prop('required', false);
-                $('#patient_trigger_studies').prop('required', false);
-                $('#patient_trigger_series').prop('required', false);
-            } else if (patient_trigger == 'received_modalities') {
-                $('#patient_trigger_modalities_section').show();
-                $('#patient_trigger_studies_section').hide();
-                $('#patient_trigger_series_section').hide();
-                $('#patient_trigger_modalities').prop('required', true);
-                $('#patient_trigger_studies').prop('required', false);
-                $('#patient_trigger_series').prop('required', false);
-            } else if (patient_trigger == 'received_studies') {
-                $('#patient_trigger_modalities_section').hide();
-                $('#patient_trigger_studies_section').show();
-                $('#patient_trigger_series_section').hide();
-                $('#patient_trigger_modalities').prop('required', false);
-                $('#patient_trigger_studies').prop('required', true);
-                $('#patient_trigger_series').prop('required', false);
-            } else if (patient_trigger == 'received_series') {
-                $('#patient_trigger_modalities_section').hide();
-                $('#patient_trigger_studies_section').hide();
-                $('#patient_trigger_series_section').show();
-                $('#patient_trigger_modalities').prop('required', false);
-                $('#patient_trigger_studies').prop('required', false);
-                $('#patient_trigger_series').prop('required', true);
-            }
-        });
-
         $("#action").trigger('change');
         $("#action_trigger").trigger('change');
         $("#study_trigger_condition").trigger('change');
-        $("#patient_trigger_condition").trigger('change');
+
+        // Pipeline preview
+        function updatePipelinePreview() {
+            var action = $('#action').val();
+            var trigger = $('#action_trigger').val() || 'series';
+            var modules = [];
+            var modInput = document.getElementById('processing_module_list');
+            if (modInput && modInput.value) modules = modInput.value.split(',').filter(Boolean);
+            var targets = [];
+            $('#target option:selected').each(function() { if(this.value) targets.push(this.value); });
+            var altTarget = $('#conditional_alternate_target').val();
+            var useAlt = $('#use_alternate_target').is(':checked');
+
+            var html = '';
+
+            // Trigger section
+            html += '<div class="pipeline-section">';
+            html += '<span class="pipeline-section-label">trigger</span>';
+            html += '<span class="pipeline-node pipeline-node--filter"><i class="fas fa-filter"></i>&nbsp;' + trigger + '</span>';
+            html += '</div>';
+
+            // Processing section
+            if (action === 'process' || action === 'both') {
+                html += '<span class="pipeline-arrow">&rarr;</span>';
+                html += '<div class="pipeline-section">';
+                html += '<span class="pipeline-section-label">process</span>';
+                if (modules.length === 0) {
+                    html += '<span class="pipeline-node pipeline-node--process" style="opacity:0.4;"><i class="fa fa-microchip"></i>&nbsp;none</span>';
+                } else {
+                    modules.forEach(function(m, i) {
+                        html += '<span class="pipeline-node pipeline-node--process"><i class="fa fa-microchip"></i>&nbsp;' + m + '</span>';
+                        if (i < modules.length - 1) html += '<span class="pipeline-arrow">&rarr;</span>';
+                    });
+                }
+                html += '</div>';
+            }
+
+            // Routing section
+            if (action === 'route' || action === 'both') {
+                html += '<span class="pipeline-arrow">&rarr;</span>';
+                html += '<div class="pipeline-section">';
+                html += '<span class="pipeline-section-label">route</span>';
+                if (targets.length === 0) {
+                    html += '<span class="pipeline-node pipeline-node--target" style="opacity:0.4;"><i class="fa fa-directions"></i>&nbsp;none</span>';
+                } else {
+                    targets.forEach(function(t, i) {
+                        html += '<span class="pipeline-node pipeline-node--target"><i class="fa fa-directions"></i>&nbsp;' + t + '</span>';
+                        if (i < targets.length - 1) html += '<span class="pipeline-separator">+</span>';
+                    });
+                }
+                if (useAlt && altTarget) {
+                    html += '<span class="pipeline-separator">|</span>';
+                    html += '<span class="pipeline-node pipeline-node--alternate"><i class="fa fa-directions"></i>&nbsp;' + altTarget + '</span>';
+                }
+                html += '</div>';
+            } else if (action === 'discard') {
+                html += '<span class="pipeline-arrow">&rarr;</span>';
+                html += '<div class="pipeline-section">';
+                html += '<span class="pipeline-node pipeline-node--discard"><i class="fas fa-ban"></i>&nbsp;discard</span>';
+                html += '</div>';
+            } else if (action === 'notification') {
+                html += '<span class="pipeline-arrow">&rarr;</span>';
+                html += '<div class="pipeline-section">';
+                html += '<span class="pipeline-node pipeline-node--notify"><i class="fas fa-bell"></i>&nbsp;notify</span>';
+                html += '</div>';
+            }
+
+            $('#pipeline-preview').html(html);
+        }
+
+        $('#action, #action_trigger, #target, #use_alternate_target, #conditional_alternate_target').on('change', updatePipelinePreview);
+        // Poll for module tag changes (bulma-tagsinput doesn't expose reliable events)
+        setInterval(updatePipelinePreview, 500);
+        updatePipelinePreview();
 
         var dropdown = document.querySelector('.dropdown');
         dropdown.addEventListener('click', function (event) {
@@ -896,14 +897,6 @@
         $("#savebutton").click(function(){
             if ($("#action_trigger").val() == 'series') {
                 $('#study_trigger_series').prop('required', false);
-                $('#patient_trigger_modalities').prop('required', false);
-                $('#patient_trigger_studies').prop('required', false);
-                $('#patient_trigger_series').prop('required', false);
-            }
-            if ($("#action_trigger").val() == 'study') {
-                $('#patient_trigger_modalities').prop('required', false);
-                $('#patient_trigger_studies').prop('required', false);
-                $('#patient_trigger_series').prop('required', false);
             }
         });       
 
@@ -1046,6 +1039,21 @@
     var bulmaTagsInstances = bulmaTagsinput.attach();
     window.setTimeout(function(){$("#modules_list input").attr("readonly","true")},200)   
     // bulmaTagsInstances[0].container.getElementsByTagName("input")[0].setAttribute("readonly",1)
+</script>
+
+<script nonce="{{ csp_nonce }}">
+    (function() {
+        var formDirty = false;
+        var form = document.querySelector('form[method="post"]');
+        if (form) {
+            form.addEventListener('input', function() { formDirty = true; });
+            form.addEventListener('change', function() { formDirty = true; });
+            form.addEventListener('submit', function() { formDirty = false; sessionStorage.setItem('mercure_saved', '1'); });
+        }
+        window.addEventListener('beforeunload', function(e) {
+            if (formDirty) { e.preventDefault(); e.returnValue = ''; }
+        });
+    })();
 </script>
 
 {% endblock %}

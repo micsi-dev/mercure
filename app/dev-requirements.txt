@@ -49,7 +49,7 @@ redis==5.0.4
     # via
     #   -c /home/vagrant/mercure/app/requirements.txt
     #   fakeredis
-requests==2.32.3
+requests==2.32.4
     # via
     #   -c /home/vagrant/mercure/app/requirements.txt
     #   requests-toolbelt
@@ -73,4 +73,4 @@ urllib3==2.2.2
     #   requests
 
 # The following packages are considered to be unsafe in a requirements file:
-# setuptools
+setuptools<71

@@ -5,14 +5,15 @@ Definitions for using TypedDicts throughout mercure.
 """
 
 import json
+import re
 import typing
 from io import TextIOWrapper
 from os import PathLike
 # Standard python includes
-from typing import Any, Dict, FrozenSet, List, Optional, Type, Union, cast
+from typing import Any, Dict, List, Optional, Type, Union, cast
 
 from common.event_types import FailStage
-from pydantic import BaseModel
+from pydantic import BaseModel, validator
 from typing_extensions import Literal, TypedDict
 
 # TODO: Add description for the individual classes
@@ -75,7 +76,22 @@ class DicomTarget(Target):
     @property
     def short_description(self) -> str:
         return f"{self.ip}:{self.port}"
-
+    
+    @validator("aet_target", "aet_source")
+    def valid_aet(cls, v):
+        if v and (len(v) > 16 or not re.match(r'^[a-zA-Z0-9_\-]*$', v)):
+            raise ValueError("AE title must be <= 16 alphanumeric characters")
+        return v
+    @validator("ip")
+    def valid_ip_or_hostname(cls, v):
+        if v and not re.match(r'^[a-zA-Z0-9.\-]+$', v):
+            raise ValueError("Invalid IP/hostname characters")
+        return v
+    @validator("port")
+    def valid_port(cls, v):
+        if v and (not v.isdigit() or not (1 <= int(v) <= 65535)):
+            raise ValueError("Invalid port number")
+        return v
 
 class DicomTLSTarget(Target):
     target_type: Literal["dicomtls"] = "dicomtls"
@@ -92,6 +108,12 @@ class DicomTLSTarget(Target):
     @property
     def short_description(self) -> str:
         return f"{self.ip}:{self.port}"
+
+    @validator("aet_target", "aet_source")
+    def valid_aet(cls, v):
+        if v and (len(v) > 16 or not re.match(r'^[a-zA-Z0-9_\-]*$', v)):
+            raise ValueError("AE title must be <= 16 alphanumeric characters")
+        return v
 
 
 class DicomWebTarget(Target):
@@ -175,46 +197,6 @@ class DummyTarget(Target):
     target_type: Literal["dummy"] = "dummy"
 
 
-# Whitelist of Docker argument keys that users may set via Modules configuration.
-# Any key NOT in this set will be stripped before the container is created.
-# This prevents privilege-escalation vectors such as "privileged", "pid_mode",
-# "cap_add", "devices", "ipc_mode", "userns_mode", etc.
-DOCKER_ARGUMENTS_WHITELIST: FrozenSet[str] = frozenset({
-    "command",
-    "entrypoint",
-    "working_dir",
-    "runtime",          # e.g. "nvidia" for GPU support
-    "mem_limit",
-    "memswap_limit",
-    "cpu_count",
-    "cpu_percent",
-    "cpus",
-    "nano_cpus",
-    "shm_size",
-    "labels",
-    "healthcheck",
-    "log_config",
-    "restart_policy",
-    "stdin_open",
-    "tty",
-    "hostname",
-    "domainname",
-    "stop_signal",
-    "stop_grace_period",
-})
-
-
-def filter_docker_arguments(arguments: dict) -> dict:
-    """Return only whitelisted keys from a docker arguments dict."""
-    blocked = set(arguments.keys()) - DOCKER_ARGUMENTS_WHITELIST
-    if blocked:
-        import logging
-        logging.getLogger(__name__).warning(
-            f"Blocked disallowed Docker argument keys: {blocked}"
-        )
-    return {k: v for k, v in arguments.items() if k in DOCKER_ARGUMENTS_WHITELIST}
-
-
 class Module(BaseModel, Compat):
     docker_tag: Optional[str] = ""
     additional_volumes: Optional[str] = ""
@@ -228,7 +210,7 @@ class Module(BaseModel, Compat):
     requires_root: Optional[bool] = False
     requires_persistence: Optional[bool] = False
     persistence_folder_name: Optional[str] = ""
-    network_mode: Optional[str] = "none"  # "none", "bridge", or custom network name
+    network_enabled: Optional[bool] = True
 
 
 class UnsetRule(TypedDict):
@@ -237,8 +219,6 @@ class UnsetRule(TypedDict):
 
 StudyTriggerCondition = Literal["timeout", "received_series"]
 StudyForceCompletionAction = Literal["discard", "proceed", "ignore"]
-PatientTriggerCondition = Literal["timeout", "received_modalities", "received_studies", "received_series"]
-PatientForceCompletionAction = Literal["discard", "proceed", "ignore"]
 
 
 class Rule(BaseModel, Compat):
@@ -250,16 +230,10 @@ class Rule(BaseModel, Compat):
     comment: str = ""
     tags: str = ""
     action: Literal["route", "both", "process", "discard", "notification"] = "route"
-    action_trigger: Literal["series", "study", "patient"] = "series"
+    action_trigger: Literal["series", "study"] = "series"
     study_trigger_condition: StudyTriggerCondition = "timeout"
     study_force_completion_action: StudyForceCompletionAction = "discard"
     study_trigger_series: str = ""
-    patient_trigger_condition: PatientTriggerCondition = "timeout"
-    patient_force_completion_action: PatientForceCompletionAction = "discard"
-    patient_trigger_modalities: str = ""
-    patient_trigger_studies: str = ""
-    patient_trigger_series: str = ""
-    patient_trigger_timeout: int = 7200  # 2 hours default
     priority: Literal["normal", "urgent", "offpeak"] = "normal"
     processing_module: Union[str, List[str]] = ""
     processing_settings: Union[List[Dict[str, Any]], Dict[str, Any]] = {}
@@ -274,6 +248,9 @@ class Rule(BaseModel, Compat):
     notification_trigger_completion: bool = True
     notification_trigger_completion_on_request: bool = False
     notification_trigger_error: bool = True
+    dynamic_routing: bool = False
+    dynamic_routing_allowed_targets: Union[str, List[str]] = ""
+    conditional_alternate_target: str = ""
 
 
 class ProcessingLogsConfig(BaseModel):
@@ -328,7 +305,6 @@ class Config(BaseModel, Compat):
     accept_compressed_images: bool
     incoming_folder: str
     studies_folder: str
-    patients_folder: str
     outgoing_folder: str
     success_folder: str
     error_folder: str
@@ -346,8 +322,6 @@ class Config(BaseModel, Compat):
     series_complete_trigger: int    # in seconds
     study_complete_trigger: int     # in seconds
     study_forcecomplete_trigger: int  # in seconds
-    patient_complete_trigger: int   # in seconds (2 hours)
-    patient_forcecomplete_trigger: int  # in seconds (24 hours)
     dicom_receiver: DicomReceiverConfig = DicomReceiverConfig()
     graphite_ip: str
     graphite_port: int
@@ -379,7 +353,7 @@ class Config(BaseModel, Compat):
 class TaskInfo(BaseModel, Compat):
     action: Literal["route", "both", "process", "discard", "notification"]
     uid: str
-    uid_type: Literal["series", "study", "patient"]
+    uid_type: Literal["series", "study"]
     triggered_rules: Union[Dict[str, Literal[True]], str]
     applied_rule: Optional[str]
     patient_name: Optional[str]
@@ -405,7 +379,7 @@ class TaskDispatch(BaseModel, Compat):
     status: Union[Dict[str, TaskDispatchStatus], EmptyDict] = cast(EmptyDict, {})
     retries: Optional[int] = 0
     next_retry_at: Optional[float] = 0
-    series_uid: Optional[str]
+    series_uid: Optional[str] = None
 
 
 class TaskStudy(BaseModel, Compat):
@@ -420,35 +394,12 @@ class TaskStudy(BaseModel, Compat):
     complete_force_action: Optional[StudyForceCompletionAction] = "discard"
 
 
-class TaskPatientStudy(BaseModel, Compat):
-    study_uid: str
-    modality: str
-    series_count: int
-    series_uids: List[str]
-    received_time: str
-
-
-class TaskPatient(BaseModel, Compat):
-    patient_id: str
-    complete_trigger: Optional[PatientTriggerCondition]
-    complete_required_modalities: str
-    complete_required_studies: str
-    complete_required_series: str
-    creation_time: str
-    last_receive_time: str
-    received_studies: Optional[List[TaskPatientStudy]]
-    received_modalities: Optional[List[str]]
-    received_series: Optional[List[str]]
-    complete_force: bool = False
-    complete_force_action: Optional[PatientForceCompletionAction] = "discard"
-
-
 class TaskProcessing(BaseModel, Compat):
     module_name: str
     module_config: Optional[Module]
     settings: Dict[str, Any] = {}
     retain_input_images: bool
-    output: Optional[Dict]
+    output: Optional[Dict] = None
 
 # class PydanticFile(object):
 #     def __init__(self, klass, file_name):
@@ -482,8 +433,7 @@ class Task(BaseModel, Compat):
     dispatch: Union[TaskDispatch, EmptyDict] = cast(EmptyDict, {})
     process: Union[TaskProcessing, EmptyDict, List[TaskProcessing]] = cast(EmptyDict, {})
     study: Union[TaskStudy, EmptyDict] = cast(EmptyDict, {})
-    patient: Union[TaskPatient, EmptyDict] = cast(EmptyDict, {})
-    nomad_info: Optional[Any]
+    nomad_info: Optional[Any] = None
 
     class Config:
         extra = "forbid"
@@ -505,9 +455,5 @@ class Task(BaseModel, Compat):
                 json.dump(self.dict(), f)
 
 
-class TaskHasStudy(Task):
+class TaskHasStudy(Task): 
     study: TaskStudy
-
-
-class TaskHasPatient(Task):
-    patient: TaskPatient

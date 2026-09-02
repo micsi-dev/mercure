@@ -255,19 +255,12 @@ if [[ "$IS_ARM64" == true ]] || [[ "$BUILD_GETDCMTAGS" == true ]]; then
     echo ""
     echo_info "Building getdcmtags for ARM64..."
 
-    cd "$MERCURE_ROOT/getdcmtags"
+    # Upstream replaced the Qt/qmake build with a static musl build driven by
+    # getdcmtags/Makefile, which produces app/bin/getdcmtags plus the bundled
+    # DCMTK binaries under app/bin/dcmtk/. The old per-Ubuntu binaries
+    # (app/bin/ubuntu*/getdcmtags) no longer exist.
+    make -C "$MERCURE_ROOT/getdcmtags"
 
-    # Build the Docker image for compiling
-    docker build --build-arg UBUNTU_VERSION=22.04 -t mercure-getdcmtags-build:22.04 .
-
-    # Run the build and extract binary
-    container_id=$(docker create mercure-getdcmtags-build:22.04 sh -c "qmake && make")
-    docker start -a "$container_id" || true
-    docker cp "$container_id:/app/getdcmtags" "$MERCURE_ROOT/app/bin/ubuntu22.04/getdcmtags"
-    docker rm "$container_id"
-
-    # Verify the binary
-    file "$MERCURE_ROOT/app/bin/ubuntu22.04/getdcmtags"
     echo_info "getdcmtags built successfully."
 fi
 
