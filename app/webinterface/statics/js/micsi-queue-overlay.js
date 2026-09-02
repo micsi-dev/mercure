@@ -280,7 +280,176 @@
                     });
                 }
             });
+
+    $('#jobs_archive tbody').on('click', '.child-info-btn', function (e) {
+                e.stopPropagation();
+                var taskId = $(this).closest('tr').data('task-id');
+                if (taskId) showArchiveJobInformation(taskId);
+            });
+
+    $('#jobs_archive tbody').on('click', '.child-audit-btn', function (e) {
+                e.stopPropagation();
+                var taskId = $(this).closest('tr').data('task-id');
+                if (taskId) showAuditTrail(taskId);
+            });
+
+    $('#jobs_archive tbody').on('click', '.child-preview-btn', function (e) {
+                e.stopPropagation();
+                var taskId = $(this).closest('tr').data('task-id');
+                console.log('Child preview clicked for task:', taskId);
+                if (taskId) {
+                    // First check for actual task ID (series files may be in parent folder)
+                    $.ajax({
+                        url: '/api/task-files-exist/' + taskId,
+                        success: function(data) {
+                            console.log('task-files-exist response for child:', data);
+                            if (data.exists) {
+                                var previewTaskId = data.actual_task_id || taskId;
+                                console.log('Opening preview for child task:', previewTaskId);
+                                checkAndOpenPreview(previewTaskId);
+                            } else {
+                                console.log('No files found for child, exists=false');
+                                alert('No output files found for this task.');
+                            }
+                        },
+                        error: function(xhr, status, error) {
+                            console.error('task-files-exist error for child:', status, error, xhr.responseText);
+                            alert('Could not check task files.');
+                        }
+                    });
+                }
+            });
   }
+
+  // --- archive row actions ------------------------------------------------
+  // Defined in our old queue.html; upstream has no equivalent. checkAndOpenPreview
+  // is the entry point to the advanced DICOM viewer.
+  function checkAndOpenPreview(taskId) {
+          $.ajax({
+              url: '/api/task-dicom-files/' + taskId,
+              success: function(data) {
+                  // Debug logging
+                  console.log('Preview API response:', data);
+                  console.log('Series count:', data.series_count);
+                  console.log('Series:', data.series);
+  
+                  // Get all series (including PDFs now)
+                  var allSeries = data.series || [];
+  
+                  console.log('All series:', allSeries.length, allSeries);
+  
+                  if (allSeries.length > 1) {
+                      // Multiple series (images and/or PDFs) - show series selector
+                      console.log('Showing series selector for', allSeries.length, 'series');
+                      showSeriesSelector(taskId, allSeries, data.files);
+                  } else if (allSeries.length === 1) {
+                      // Single series - check if it's PDF or image
+                      var series = allSeries[0];
+                      if (series.is_pdf) {
+                          var pdfFile = data.files.find(function(f) { return f.is_pdf; });
+                          if (pdfFile) {
+                              console.log('Opening PDF viewer for single PDF series');
+                              openPdfViewer(taskId, pdfFile.filename);
+                          }
+                      } else {
+                          console.log('Opening single image series directly:', series.series_uid);
+                          openAdvancedDicomViewer(taskId, series.series_uid);
+                      }
+                  } else if (data.files.length > 0) {
+                      // Fallback: has files but no series info
+                      console.log('Fallback: opening viewer without series filter');
+                      openAdvancedDicomViewer(taskId);
+                  } else {
+                      alert('No DICOM files found in output folder.');
+                  }
+              },
+              error: function(xhr) {
+                  if (xhr.status === 404) {
+                      alert('Task output folder not found. The files may have been cleaned up or the task ID does not match a folder on disk.');
+                  } else if (xhr.status === 403) {
+                      alert('Access denied. Please log in again.');
+                  } else {
+                      alert('Could not access task output files: ' + (xhr.responseJSON ? xhr.responseJSON.error : 'unknown error'));
+                  }
+              }
+          });
+      }
+
+  function deleteArchiveJob(taskId) {
+          if (taskId === "") {
+              return;
+          }
+  
+          if (!confirm("Are you sure you want to delete this task from the archive? This will remove the database records but not any files on disk.")) {
+              return;
+          }
+  
+          $.ajax({
+              type: 'DELETE',
+              url: '/queue/jobs/archive/' + taskId,
+              dataType: 'json',
+              error: function (xhr) {
+                  if (xhr.responseJSON && xhr.responseJSON.hasOwnProperty("error")) {
+                      alert("Delete failed: " + xhr.responseJSON["error"]);
+                  } else {
+                      alert("Delete failed: unknown error.");
+                  }
+              },
+              success: function (data) {
+                  if (data.hasOwnProperty("error")) {
+                      alert("Delete failed: " + data["error"]);
+                  } else {
+                      alert("Task deleted from archive successfully.");
+                      $('#jobs_archive').DataTable().ajax.reload();
+                  }
+              },
+              timeout: 5000
+          });
+      }
+
+  function openPdfViewer(taskId, filename) {
+          $('#pdf_frame').attr('src', '/api/task-pdf/' + taskId + '/' + filename);
+          $('#pdf_viewer_modal').addClass('is-active');
+      }
+
+  // --- file status --------------------------------------------------------
+  // Called from the table's drawCallback. Without it every draw throws and the
+  // Files column keeps spinning.
+  function checkFileStatusForVisibleRows() {
+          $('#jobs_archive tbody .file-status-icon').each(function() {
+              var $icon = $(this);
+              var taskId = $icon.data('task-id');
+  
+              // Skip if already checked (not showing spinner)
+              if (!$icon.find('.fa-spinner').length) {
+                  return;
+              }
+  
+              $.ajax({
+                  url: '/api/task-files-exist/' + taskId,
+                  success: function(data) {
+                      var html;
+                      // Use actual_task_id for preview/navigation (may differ for series tasks)
+                      var actualTaskId = data.actual_task_id || taskId;
+                      if (data.exists) {
+                          if (data.location === 'success') {
+                              html = '<a href="#" class="file-link has-text-success" data-tab="success" data-task-id="' + actualTaskId + '">Success</a>';
+                          } else if (data.location === 'error') {
+                              html = '<a href="#" class="file-link has-text-danger" data-tab="fail" data-task-id="' + actualTaskId + '">Error</a>';
+                          } else {
+                              html = '<span class="has-text-grey">On Disk</span>';
+                          }
+                      } else {
+                          html = '<span class="has-text-grey-light">-</span>';
+                      }
+                      $icon.html(html);
+                  },
+                  error: function() {
+                      $icon.html('<span class="has-text-grey-light">?</span>');
+                  }
+              });
+          });
+      }
 
   // --- child task rendering -----------------------------------------------
   function formatChildTasks(data, parentScope) {
@@ -361,4 +530,8 @@
       }
     }, 0);
   });
+  // Rendered markup uses inline handlers, which resolve against window.
+  window.checkAndOpenPreview = checkAndOpenPreview;
+  window.deleteArchiveJob = deleteArchiveJob;
+  window.openPdfViewer = openPdfViewer;
 })();

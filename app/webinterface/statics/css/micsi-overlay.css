@@ -390,27 +390,27 @@
 #jobs_archive { table-layout: fixed; width: 100%; }
 
 #jobs_archive > thead > tr > th:nth-child(1),
-#jobs_archive > tbody > tr > td:nth-child(1) { width: 3%; }   /* expander */
+#jobs_archive > tbody > tr:not(.child) > td:nth-child(1) { width: 3%; }   /* expander */
 #jobs_archive > thead > tr > th:nth-child(2),
-#jobs_archive > tbody > tr > td:nth-child(2) { width: 9%; }   /* ACC */
+#jobs_archive > tbody > tr:not(.child) > td:nth-child(2) { width: 9%; }   /* ACC */
 #jobs_archive > thead > tr > th:nth-child(3),
-#jobs_archive > tbody > tr > td:nth-child(3) { width: 9%; }   /* MRN */
+#jobs_archive > tbody > tr:not(.child) > td:nth-child(3) { width: 9%; }   /* MRN */
 #jobs_archive > thead > tr > th:nth-child(4),
-#jobs_archive > tbody > tr > td:nth-child(4) { width: 19%; }  /* UID */
+#jobs_archive > tbody > tr:not(.child) > td:nth-child(4) { width: 19%; }  /* UID */
 #jobs_archive > thead > tr > th:nth-child(5),
-#jobs_archive > tbody > tr > td:nth-child(5) { width: 8%; }   /* Scope */
+#jobs_archive > tbody > tr:not(.child) > td:nth-child(5) { width: 8%; }   /* Scope */
 #jobs_archive > thead > tr > th:nth-child(6),
-#jobs_archive > tbody > tr > td:nth-child(6) { width: 10%; }  /* Rule */
+#jobs_archive > tbody > tr:not(.child) > td:nth-child(6) { width: 10%; }  /* Rule */
 #jobs_archive > thead > tr > th:nth-child(7),
-#jobs_archive > tbody > tr > td:nth-child(7) { width: 13%; }  /* Time */
+#jobs_archive > tbody > tr:not(.child) > td:nth-child(7) { width: 13%; }  /* Time */
 #jobs_archive > thead > tr > th:nth-child(8),
-#jobs_archive > tbody > tr > td:nth-child(8) { width: 6%; }   /* Files */
+#jobs_archive > tbody > tr:not(.child) > td:nth-child(8) { width: 6%; }   /* Files */
 #jobs_archive > thead > tr > th:nth-child(9),
-#jobs_archive > tbody > tr > td:nth-child(9) { width: 23%; }  /* ID */
+#jobs_archive > tbody > tr:not(.child) > td:nth-child(9) { width: 23%; }  /* ID */
 
 /* Long identifiers wrap on character boundaries, not one glyph per line. */
-#jobs_archive > tbody > tr > td:nth-child(4),
-#jobs_archive > tbody > tr > td:nth-child(9) { word-break: break-all; white-space: normal; }
+#jobs_archive > tbody > tr:not(.child) > td:nth-child(4),
+#jobs_archive > tbody > tr:not(.child) > td:nth-child(9) { word-break: break-all; white-space: normal; }
 
 /* --------------------------------------------------------------------------
  * 4. Expanded child-task table
@@ -418,6 +418,11 @@
  * Rendered inside a cell of the archive table, so it must opt out of the fixed
  * layout and sizing above and lay itself out from its own content.
  * ----------------------------------------------------------------------- */
+/* DataTables renders an expanded row as <tr class="child"><td colspan="9">.
+   That cell is nth-child(1), so without this it would inherit the 3% expander
+   width above and crush the whole accordion. */
+#jobs_archive > tbody > tr.child > td { width: auto !important; padding: 0.75rem; }
+
 #jobs_archive .child-tasks-table { table-layout: auto !important; width: 100%; margin-bottom: 0; }
 #jobs_archive .child-tasks-table th,
 #jobs_archive .child-tasks-table td { width: auto !important; white-space: normal; }
