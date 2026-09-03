@@ -519,12 +519,15 @@ async def docker_runtime(task: Task, folder: Path, file_count_begin: int, task_p
 
         # Drop all capabilities by default for non-root containers
         if not module.requires_root:
-            security_config['cap_drop'] = ['ALL']
-            # Only add back capabilities if explicitly required by module
-            # For standard DICOM processing, no capabilities needed
+            # cap_drop itself is set further down, on `arguments`, so a module
+            # can still override it through docker_arguments. Setting it here
+            # as well would pass cap_drop to containers.run() twice.
+            # For standard DICOM processing, no capabilities are needed.
             logger.info(f"Module {task_processing.module_name} running with dropped capabilities (least privilege)")
         else:
-            # Root containers still get capability restrictions
+            # Root modules keep their capabilities: cap_drop=ALL is what they
+            # declared requires_root to avoid. security_opt and the read-only
+            # root filesystem below still do not apply to them either.
             logger.warning(f"Module {task_processing.module_name} running as root - security capabilities limited")
 
         # Prevent privilege escalation
@@ -532,7 +535,7 @@ async def docker_runtime(task: Task, folder: Path, file_count_begin: int, task_p
 
         # Read-only root filesystem (if not root module)
         # Root modules may need to write to system directories
-        if not module.requires_root:
+        if not module.requires_root and "read_only" not in arguments:
             security_config['read_only'] = True
             # Provide writable /tmp for temporary files
             # security_config['tmpfs'] = {'/tmp': 'size=1G,mode=1777'}
@@ -589,8 +592,17 @@ async def docker_runtime(task: Task, folder: Path, file_count_begin: int, task_p
                     logger.warning(f"Stripped disallowed volumes at runtime: {stripped_vols}")
 
         # Drop all capabilities by default; unsafe mode can override via docker_arguments
-        if "cap_drop" not in arguments:
+        if "cap_drop" not in arguments and not module.requires_root:
             arguments["cap_drop"] = ["ALL"]
+
+        # containers.run() receives several dicts by **splat, so a key present
+        # in more than one of them is a TypeError at call time rather than a
+        # config warning. Collapse any overlap here and say what was dropped;
+        # the security policy wins over module-supplied docker_arguments.
+        for _clash in sorted(set(arguments) & set(security_config)):
+            logger.warning(
+                f"docker_arguments '{_clash}' overridden by the module security policy")
+            del arguments[_clash]
 
         container = docker_client.containers.run(
             docker_tag,
