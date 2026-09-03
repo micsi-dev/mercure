@@ -31,6 +31,19 @@ from routing import router
 
 from .testing_common import FakeDockerContainer, FakeImageContainer, make_fake_processor, mock_incoming_uid, mock_task_ids
 
+# MICSI: process_series applies a container security policy on top of the
+# arguments upstream passes, and forces unbuffered module output so logs stream.
+# Kept here so the call assertions below stay in step with process_series.py.
+MICSI_CONTAINER_SECURITY = dict(
+    security_opt=['no-new-privileges:true'],
+    read_only=True,
+    tmpfs={
+        '/tmp': 'size=10G,mode=1777',
+        '/app/logs': 'size=100M,mode=1777',
+        '/var/cache/fontconfig': 'size=50M,mode=1777',
+    },
+)
+
 logger = config.get_logger()
 
 processor_path = Path()
@@ -183,6 +196,8 @@ async def test_process_series_nomad(fs, mercure_config: Callable[[Dict], Config]
             "output": None,
         },
         "study": {},
+        # MICSI: Task carries a patient block for patient-level rules.
+        "patient": {},
         "nomad_info": fake_run.return_value,
     }
 
@@ -275,7 +290,8 @@ async def test_process_series(fs, mercure_config: Callable[[Dict], Config], mock
                 config.modules["test_module"].docker_tag,
                 environment={'HOLOSCAN_INPUT_PATH': '/tmp/data', 'HOLOSCAN_OUTPUT_PATH': '/tmp/output',
                              "MERCURE_IN_DIR": "/tmp/data", "MERCURE_OUT_DIR": "/tmp/output",
-                             'MONAI_INPUTPATH': '/tmp/data', 'MONAI_OUTPUTPATH': '/tmp/output'},
+                             'MONAI_INPUTPATH': '/tmp/data', 'MONAI_OUTPUTPATH': '/tmp/output',
+                             'PYTHONUNBUFFERED': '1'},
                 network_mode=None,
                 cap_drop=['ALL'],
                 user=uid_string,
@@ -283,6 +299,7 @@ async def test_process_series(fs, mercure_config: Callable[[Dict], Config], mock
                 mounts=unittest.mock.ANY,
                 volumes={},
                 runtime="runc",
+                **MICSI_CONTAINER_SECURITY,
                 detach=True),
             call('busybox:stable-musl',
                  mounts=unittest.mock.ANY,
@@ -369,16 +386,19 @@ async def test_multi_process_series(fs, mercure_config: Callable[[Dict], Config]
             config.modules[m].docker_tag,
             environment={'HOLOSCAN_INPUT_PATH': '/tmp/data', 'HOLOSCAN_OUTPUT_PATH': '/tmp/output',
                          "MERCURE_IN_DIR": "/tmp/data", "MERCURE_OUT_DIR": "/tmp/output",
-                         'MONAI_INPUTPATH': '/tmp/data', 'MONAI_OUTPUTPATH': '/tmp/output'},
+                         'MONAI_INPUTPATH': '/tmp/data', 'MONAI_OUTPUTPATH': '/tmp/output',
+                         'PYTHONUNBUFFERED': '1'},
             network_mode=None,
             cap_drop=['ALL'],
             user=uid_string,
             group_add=[os.getegid()],
             runtime="runc",
             volumes={},
+            **MICSI_CONTAINER_SECURITY,
             mounts=[
                 {
-                    'ReadOnly': False,
+                    # MICSI: input is mounted read-only.
+                    'ReadOnly': True,
                     'Source': str(processor_path / 'in'),
                     'Target': '/tmp/data',
                     'Type': 'bind',
