@@ -27,6 +27,7 @@ Client side lives in common/monitor.py (find_output_folder, get_child_tasks).
 Mounted in bookkeeping/bookkeeper.py.
 """
 
+import ast
 import datetime
 from pathlib import Path
 
@@ -34,13 +35,15 @@ import bookkeeping.database as db
 import pydicom
 import sqlalchemy
 from bookkeeping.helper import CustomJSONResponse, json  # noqa: F401
-from common import config  # noqa: F401
+from common import config
 from decoRouter import Router as decoRouter
 from pydicom.datadict import keyword_for_tag  # noqa: F401
 from sqlalchemy import select  # noqa: F401
 from starlette.applications import Starlette
 from starlette.authentication import requires
 from starlette.responses import JSONResponse
+
+logger = config.get_logger()
 
 router = decoRouter()
 
