@@ -439,7 +439,7 @@ async def show_log(request) -> Response:
             service_name = service_name_or_list
             sub_services = []
 
-        command = ["sudo", "journalctl", "-n", "1000", "-u", service_name]
+        command = ["journalctl", "-n", "1000", "-u", service_name]
         if start_timestamp:
             command.extend(["--since", f"{start_timestamp} {config.mercure.local_time}"])
         if end_timestamp:
@@ -1072,8 +1072,8 @@ async def control_services(request) -> Response:
                     systemd_services = [systemd_services]
 
                 for service_name in systemd_services:
-                    command = ["sudo","systemctl", action, service_name]
-                    logger.info(f"Executing: {''.join(command)}")
+                    command = ["systemctl", action, service_name]
+                    logger.info(f"Executing: {' '.join(command)}")
                     await async_run_exec(*command)
 
             elif runtime == "docker":
