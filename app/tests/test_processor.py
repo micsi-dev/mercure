@@ -431,6 +431,8 @@ async def test_multi_process_series(fs, mercure_config: Callable[[Dict], Config]
             "output": partial["modules"][m]["settings"]["result"],
         } for i, m in enumerate(partial["modules"])],
         "study": {},
+        # MICSI: Task carries a patient block for patient-level rules.
+        "patient": {},
         "nomad_info": None,
     }
     common.monitor.send_task_event.assert_has_calls(  # type: ignore
