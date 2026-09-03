@@ -468,6 +468,7 @@ class TaskStudy(BaseModel, Compat):
     creation_time: str
     last_receive_time: str
     received_series: Optional[List[str]]
+    received_modalities: Optional[List[str]] = []
     received_series_uid: Optional[List[str]]
     complete_force: bool = False
     complete_force_action: Optional[StudyForceCompletionAction] = "discard"

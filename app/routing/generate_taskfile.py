@@ -147,6 +147,7 @@ def add_study(
         creation_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         last_receive_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         received_series=[tags_list.get("SeriesDescription", mercure_options.INVALID)],
+        received_modalities=[tags_list.get("Modality", mercure_options.INVALID)],
         received_series_uid=[tags_list.get("SeriesInstanceUID", mercure_options.INVALID)],
         complete_force=False,
         complete_force_action=config.mercure.rules[applied_rule].study_force_completion_action,
@@ -379,6 +380,16 @@ def update_study_task(
     else:
         study.received_series = [series_description]
 
+    # Remember every modality seen in this study. One study can carry both
+    # the PT and the MR series, so patient-level criteria cannot be built
+    # from a single modality per study.
+    study_modality = tags_list.get("Modality", mercure_options.INVALID)
+    if study.received_modalities and (isinstance(study.received_modalities, list)):
+        if study_modality not in study.received_modalities:
+            study.received_modalities.append(study_modality)
+    else:
+        study.received_modalities = [study_modality]
+
     # Also remember the received SeriesUIDs for information purpose
     if study.received_series_uid and (isinstance(study.received_series_uid, list)):
         study.received_series_uid.append(series_uid)
@@ -431,6 +442,7 @@ def update_patient_task(
     series_count: int,
     series_uids: List[str],
     series_descriptions: Optional[List[str]] = None,
+    modalities: Optional[List[str]] = None,
 ) -> Tuple[bool, str]:
     """
     Update the patient task file with information from the latest received study
@@ -469,12 +481,17 @@ def update_patient_task(
     else:
         patient.received_studies = [patient_study]
 
-    # Remember all received modalities for completion checking
+    # Remember all received modalities for completion checking. A study can
+    # hold more than one modality (a combined PT/MR session is one study), so
+    # take the full set the study recorded and fall back to its headline
+    # modality only for task files written before that set existed.
+    study_modalities = [m for m in (modalities or [modality]) if m]
     if patient.received_modalities and (isinstance(patient.received_modalities, list)):
-        if modality not in patient.received_modalities:
-            patient.received_modalities.append(modality)
+        for m in study_modalities:
+            if m not in patient.received_modalities:
+                patient.received_modalities.append(m)
     else:
-        patient.received_modalities = [modality]
+        patient.received_modalities = list(dict.fromkeys(study_modalities))
 
     # Remember all received series descriptions for completion checking
     if series_descriptions:

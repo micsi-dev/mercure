@@ -447,6 +447,7 @@ def push_studylevel_patient(study: str, task: Task) -> bool:
         series_count,
         series_uids,
         series_descriptions,
+        task.study.received_modalities if task.study else None,
     )
 
     if not result:
