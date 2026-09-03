@@ -57,6 +57,16 @@
     });
   }
 
+  // Every archive toolbar button acts on the selected row. Reading
+  // .data()[0].task_id with nothing selected throws, which is what happened
+  // while the enable/disable binding below was broken and the buttons stayed
+  // live. Returning null lets each action bail quietly instead.
+  function selectedArchiveTaskId() {
+    var rows = $('#jobs_archive').DataTable().rows({ selected: true }).data();
+    if (!rows || rows.length === 0 || !rows[0]) return null;
+    return rows[0].task_id;
+  }
+
   // --- 2. widen the archive table to the MICSI column set -------------------
   // 9 columns, matching the `columns` array below. The first is the dt-control
   // expander and carries no header text.
@@ -182,7 +192,8 @@
                         text: '<i class="fas fa-code"></i>',
                         titleAttr: 'Job information',
                         action: function ( e, dt, node, config ) {
-                            var jid = $('#jobs_archive').DataTable().rows( { selected: true } ).data()[0].task_id;
+                            var jid = selectedArchiveTaskId();
+                            if (jid === null) { return; }
                             showArchiveJobInformation(jid);
                         }
                     },
@@ -190,7 +201,8 @@
                         text: '<i class="fas fa-list-ul"></i>',
                         titleAttr: 'Audit trail',
                         action: function ( e, dt, node, config ) {
-                            var jid = $('#jobs_archive').DataTable().rows( { selected: true } ).data()[0].task_id;
+                            var jid = selectedArchiveTaskId();
+                            if (jid === null) { return; }
                             showAuditTrail(jid);
                         }
                     },
@@ -198,7 +210,8 @@
                         text: '<i class="fas fa-receipt"></i>',
                         titleAttr: 'Processing log',
                         action: function ( e, dt, node, config ) {
-                            var jid = $('#jobs_archive').DataTable().rows( { selected: true } ).data()[0].task_id;
+                            var jid = selectedArchiveTaskId();
+                            if (jid === null) { return; }
                             showLogs(jid);
                         }
                     },
@@ -206,7 +219,8 @@
                         text: '<i class="fas fa-chart-bar"></i>',
                         titleAttr: 'Processing results',
                         action: function ( e, dt, node, config ) {
-                            var jid = $('#jobs_archive').DataTable().rows( { selected: true } ).data()[0].task_id;
+                            var jid = selectedArchiveTaskId();
+                            if (jid === null) { return; }
                             showResults(jid);
                         }
                     },
@@ -214,7 +228,8 @@
                         text: '<i class="fas fa-eye"></i>',
                         titleAttr: 'Preview output',
                         action: function ( e, dt, node, config ) {
-                            var jid = $('#jobs_archive').DataTable().rows( { selected: true } ).data()[0].task_id;
+                            var jid = selectedArchiveTaskId();
+                            if (jid === null) { return; }
                             console.log('Archive preview clicked for task:', jid);
                             // First check for actual task ID (series/study files may be in parent folder)
                             $.ajax({
@@ -241,7 +256,8 @@
                         text: '<i class="fas fa-trash-alt"></i>',
                         titleAttr: 'Delete from archive',
                         action: function ( e, dt, node, config ) {
-                            var jid = $('#jobs_archive').DataTable().rows( { selected: true } ).data()[0].task_id;
+                            var jid = selectedArchiveTaskId();
+                            if (jid === null) { return; }
                             deleteArchiveJob(jid);
                         }
                     }
@@ -572,11 +588,14 @@
   // disabled. Rebind against ours; every button acts on the selected row.
   function bindArchiveSelection() {
     var api = $('#jobs_archive').DataTable();
-    api.off('select.micsi deselect.micsi').on('select.micsi deselect.micsi', function () {
+    // Same form upstream uses for its other tables (queue.html), rather than a
+    // custom event namespace: this runs once, from boot, so there is nothing to
+    // unbind first.
+    api.on('select deselect', function () {
       var selected = api.rows({ selected: true }).count() > 0;
-      api.buttons().every(function () { this.enable(selected); });
+      api.buttons().enable(selected);
     });
-    api.buttons().every(function () { this.enable(false); });
+    api.buttons().enable(false);
   }
 
   // --- boot -----------------------------------------------------------------
