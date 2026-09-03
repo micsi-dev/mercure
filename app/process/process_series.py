@@ -773,9 +773,20 @@ async def process_series(folder: Path) -> None:
         if task.dispatch:
             needs_dispatching = True
 
-        # Remember the number of incoming DCM files (for logging purpose)
-        # Use rglob for robustness (patient-level tasks are flattened before reaching here)
-        file_count_begin = len(list(folder.rglob(mercure_names.DCMFILTER)))
+        # Remember the number of incoming DCM files (for logging purpose).
+        # rglob rather than glob because a patient-level task keeps its series in
+        # per-study subfolders, which a flat glob would count as zero.
+        #
+        # The working subfolders have to be excluded, though: processor.py calls
+        # backup_input_images() immediately before process_series(), so by now
+        # as_received/ already holds a copy of every file and a plain rglob counts
+        # each one twice. in/ and out/ do not exist yet at this point, but they are
+        # listed so the count stays right if that ordering ever changes.
+        _work_dirs = {"as_received", "in", "out", "input_files"}
+        file_count_begin = len([
+            f for f in folder.rglob(mercure_names.DCMFILTER)
+            if not _work_dirs.intersection(f.relative_to(folder).parts)
+        ])
 
         (folder / "in").mkdir()
         for child in folder.iterdir():
