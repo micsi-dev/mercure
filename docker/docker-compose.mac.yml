@@ -1,5 +1,14 @@
 # Docker Compose override for macOS (including Apple Silicon)
-# Usage: docker compose -f docker-compose.yml -f docker-compose.mac.yml up -d --build
+# Usage:
+#   docker compose -p onprem --profile build \
+#     -f docker-compose.yml -f docker-compose.mac.yml up -d --build
+#
+# --profile build is required: upstream marks the `base` service with
+# profiles: [build], and the services here depend on it for build ordering.
+# Compose unions profiles across files, so it cannot be cleared by an override.
+#
+# -p onprem is required: config/services.json refers to containers by the
+# onprem-* names, which come from the project name.
 #
 # This file addresses Mac-specific issues:
 # 1. Docker socket permissions (requires root for UI/processor)
@@ -13,7 +22,10 @@ x-env: &env
     MERCURE_RUNNER: docker
     MERCURE_ENV: DEV
     MERCURE_CONFIG_FOLDER: /opt/mercure/config
-    REDIS_URL: redis://redis:6379/0
+    # Upstream now requires an authenticated Redis: the redis service runs with
+    # --requirepass and webinterface/common.py refuses to start without a
+    # password in the URL. REDIS_PASSWORD comes from docker/.env.
+    REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
 
 x-volumes: &volumes
   volumes:
@@ -28,7 +40,7 @@ x-volumes-docker: &volumes-docker
 
 x-local-build: &local-build
   args:
-    IMAGE_NAME: mercure-base
+    BASE_IMAGE_NAME: mercure-base
     VERSION_TAG: latest
 
 services:

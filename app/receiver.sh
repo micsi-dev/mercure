@@ -10,62 +10,76 @@ else
     echo "Arguments: $@"
 fi
 echo ""
+
+# Locate getdcmtags binary
 binary=bin/getdcmtags
-
-# Detect architecture for proper binary selection
-ARCH=$(uname -m)
-echo "Detected architecture: $ARCH"
-
 if [[ ! -f "$binary" ]] ; then
-    # Get Ubuntu version if available
-    UBUNTU_VERSION=""
-    if command -v lsb_release &> /dev/null; then
-        UBUNTU_VERSION=$(lsb_release -rs)
-    fi
-
-    # Select binary based on Ubuntu version
-    if [[ "$UBUNTU_VERSION" == "24.04" ]]; then
-        binary=bin/ubuntu24.04/getdcmtags
-    elif [[ "$UBUNTU_VERSION" == "22.04" ]]; then
-        binary=bin/ubuntu22.04/getdcmtags
-    elif [[ "$UBUNTU_VERSION" == "20.04" ]]; then
-        binary=bin/ubuntu20.04/getdcmtags
-    elif [[ "$UBUNTU_VERSION" == "18.04" ]]; then
-        binary=bin/ubuntu18.04/getdcmtags
-    fi
-
-    # Check if the selected binary exists and matches architecture
-    if [[ -f "$binary" ]]; then
-        BINARY_ARCH=$(file "$binary" 2>/dev/null | grep -o 'x86-64\|aarch64\|ARM' | head -1)
-        if [[ "$ARCH" == "aarch64" || "$ARCH" == "arm64" ]]; then
-            if [[ "$BINARY_ARCH" != "aarch64" && "$BINARY_ARCH" != "ARM" ]]; then
-                echo "WARNING: Binary is $BINARY_ARCH but system is $ARCH"
-                echo "NOTE: You may need to rebuild getdcmtags for ARM64"
-                echo "NOTE: Run: cd getdcmtags && ./build.sh"
-            fi
-        fi
-    fi
+    binary="$(dirname "$0")/$binary"
 fi
 if [[ -f "$binary" ]] ; then
     echo "getdcmtags binary at '$binary'"
 else
-    binary="$(dirname "$0")/$binary"
-    if [[ -f "$binary" ]] ; then
-        echo "getdcmtags binary at '$binary'"    
-    else
-        echo "ERROR: Unable to locate getdcmtags binary at '$binary'"
-        echo "Terminating..."
-        exit 1
-    fi
+    echo "ERROR: Unable to locate getdcmtags binary at '$binary'"
+    echo "Terminating..."
+    exit 1
 fi
 
 if $binary -h &> /dev/null; then
     echo "getdcmtags binary validated."
-else 
+else
     echo "ERROR: getdcmtags binary failed to start."
     echo "Terminating..."
     exit 1
 fi
+
+# Locate storescp binary (bundled static build)
+storescp_binary=bin/dcmtk/storescp
+if [[ ! -f "$storescp_binary" ]] ; then
+    storescp_binary="$(dirname "$0")/$storescp_binary"
+fi
+if [[ ! -f "$storescp_binary" ]] ; then
+    echo "ERROR: Unable to locate storescp binary at '$storescp_binary'"
+    echo "Terminating..."
+    exit 1
+fi
+echo "storescp binary at '$storescp_binary'"
+
+# Set DICOM dictionary path for statically-built storescp
+dcmdict_dir="$(dirname "$storescp_binary")"
+if [ -f "$dcmdict_dir/dicom.dic" ]; then
+    export DCMDICTPATH="$dcmdict_dir/dicom.dic"
+    echo "DCMDICTPATH set to $DCMDICTPATH"
+fi
+
+# Verify storescp version >= 3.7.0
+storescp_version=$("$storescp_binary" --version 2>&1 | grep -oP 'v\K[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+if [ -z "$storescp_version" ]; then
+    echo "ERROR: Unable to determine storescp version"
+    echo "Terminating..."
+    exit 1
+fi
+echo "storescp version: $storescp_version"
+
+# Compare version: require >= 3.7.0
+required_version="3.7.0"
+if [ "$(printf '%s\n' "$required_version" "$storescp_version" | sort -V | head -n1)" != "$required_version" ]; then
+    echo "ERROR: storescp version $storescp_version is below required $required_version"
+    echo "Terminating..."
+    exit 1
+fi
+echo "storescp version validated (>= $required_version)."
+
+# Verify storescp was built from the required commit
+required_commit="969c4b6"
+if [ -n "$required_commit" ]; then
+    if ! "$storescp_binary" --version 2>&1 | grep -q "$required_commit"; then
+        echo "ERROR: storescp binary was not built from required commit $required_commit"
+        echo "Terminating..."
+        exit 1
+    fi
+    echo "storescp commit validated ($required_commit)."
+fi
+
 # Check if the configuration is accessible
 
 config_folder="${MERCURE_CONFIG_FOLDER:-/opt/mercure/config}"
@@ -77,7 +91,7 @@ echo "Configuration file: ${config}"
 if [ ! -f $config ]; then
     echo "ERROR: Unable to find configuration file ${config}"
     echo "ERROR: Terminating"
-    exit 1    
+    exit 1
 fi
 
 # Now read the needed values
@@ -130,7 +144,7 @@ if [ $accept_compressed = "true" ]
 then
     echo "NOTE: Accepting all supported transfer syntaxes"
     transfer_syntax_option="+xa"
-fi 
+fi
 
 if [ $bookkeeper_api_key = "null" ]
 then
@@ -139,13 +153,33 @@ else
     bookkeeper_api_key=" $bookkeeper_api_key"
 fi
 
+debug_flag=""
+for arg in "$@"; do
+    if [ "$arg" = "--debug" ]; then
+        debug_flag="-d"
+        break
+    fi
+done
+if [ -n "$DEBUG_MODE" ]; then
+    debug_flag="-d"
+fi
+if [ -n "$debug_flag" ]; then
+    echo "Debug mode enabled"
+fi
+
 echo ""
 echo "Starting receiver process on port $port, folder $incoming, bookkeeper $bookkeeper"
 
-if [ "$MERCURE_TLS_ENABLED" -eq "1" ]
+case "$(printf '%s' "${MERCURE_TLS_ENABLED:-0}" | tr '[:upper:]' '[:lower:]')" in
+    1|true|yes|on) mercure_tls_on=1 ;;
+    *)             mercure_tls_on=0 ;;
+esac
+
+if [ "$mercure_tls_on" = "1" ]
 then
     echo "mercure has been configured for DICOM TLS. Starting in TLS mode."
-    storescp +tls $MERCURE_TLS_KEY $MERCURE_TLS_CERT +cf $MERCURE_TLS_CA_CERT --fork --promiscuous $transfer_syntax_option -od "$incoming" +uf -xcr "$binary $incoming/#f #r #a #c$bookkeeper$bookkeeper_api_key $@" $port
+    "$storescp_binary" $debug_flag +tls $MERCURE_TLS_KEY $MERCURE_TLS_CERT +cf $MERCURE_TLS_CA_CERT --fork --promiscuous $transfer_syntax_option -od "$incoming" +uf -xcr "$binary $incoming/#f #r #a #c$bookkeeper$bookkeeper_api_key $@" $port
 else
-    storescp --fork --promiscuous $transfer_syntax_option -od "$incoming" +uf -xcr "$binary $incoming/#f #r #a #c$bookkeeper$bookkeeper_api_key $@" $port
+    echo "$storescp_binary" $debug_flag --fork --promiscuous $transfer_syntax_option -od "$incoming" +uf -xcr "$binary $incoming/#f #r #a #c$bookkeeper$bookkeeper_api_key $@" $port
+    "$storescp_binary" $debug_flag --fork --promiscuous $transfer_syntax_option -od "$incoming" +uf -xcr "$binary $incoming/#f #r #a #c$bookkeeper$bookkeeper_api_key $@" $port
 fi

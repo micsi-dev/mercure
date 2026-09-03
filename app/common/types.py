@@ -5,6 +5,7 @@ Definitions for using TypedDicts throughout mercure.
 """
 
 import json
+import re
 import typing
 from io import TextIOWrapper
 from os import PathLike
@@ -12,7 +13,7 @@ from os import PathLike
 from typing import Any, Dict, FrozenSet, List, Optional, Type, Union, cast
 
 from common.event_types import FailStage
-from pydantic import BaseModel
+from pydantic import BaseModel, validator
 from typing_extensions import Literal, TypedDict
 
 # TODO: Add description for the individual classes
@@ -75,7 +76,22 @@ class DicomTarget(Target):
     @property
     def short_description(self) -> str:
         return f"{self.ip}:{self.port}"
-
+    
+    @validator("aet_target", "aet_source")
+    def valid_aet(cls, v):
+        if v and (len(v) > 16 or not re.match(r'^[a-zA-Z0-9_\-]*$', v)):
+            raise ValueError("AE title must be <= 16 alphanumeric characters")
+        return v
+    @validator("ip")
+    def valid_ip_or_hostname(cls, v):
+        if v and not re.match(r'^[a-zA-Z0-9.\-]+$', v):
+            raise ValueError("Invalid IP/hostname characters")
+        return v
+    @validator("port")
+    def valid_port(cls, v):
+        if v and (not v.isdigit() or not (1 <= int(v) <= 65535)):
+            raise ValueError("Invalid port number")
+        return v
 
 class DicomTLSTarget(Target):
     target_type: Literal["dicomtls"] = "dicomtls"
@@ -92,6 +108,12 @@ class DicomTLSTarget(Target):
     @property
     def short_description(self) -> str:
         return f"{self.ip}:{self.port}"
+
+    @validator("aet_target", "aet_source")
+    def valid_aet(cls, v):
+        if v and (len(v) > 16 or not re.match(r'^[a-zA-Z0-9_\-]*$', v)):
+            raise ValueError("AE title must be <= 16 alphanumeric characters")
+        return v
 
 
 class DicomWebTarget(Target):
@@ -175,11 +197,23 @@ class DummyTarget(Target):
     target_type: Literal["dummy"] = "dummy"
 
 
-# Whitelist of Docker argument keys that users may set via Modules configuration.
-# Any key NOT in this set will be stripped before the container is created.
-# This prevents privilege-escalation vectors such as "privileged", "pid_mode",
-# "cap_add", "devices", "ipc_mode", "userns_mode", etc.
+# Keys that may be forwarded to docker.containers.run() from a module's
+# docker_arguments. process_series applies this unconditionally, before
+# upstream's MERCURE_FORBID_UNSAFE_DOCKER_ARGS layer, so that an unrecognised
+# key can never reach the Docker API even when that env-gated layer is off.
+#
+# The set is the union of two lists that grew separately: the original MICSI
+# whitelist (command/entrypoint/working_dir and friends, which our modules use)
+# and upstream's ALLOWED_DOCKER_ARGS in webinterface/modules.py (the finer
+# grained resource knobs). Kept literal rather than imported from there:
+# webinterface.modules imports Module from this file, so importing it back
+# would be circular.
+#
+# Anything granting host access or privilege escalation -- privileged,
+# network_mode, pid, ipc, userns_mode, cap_add, devices, security_opt, volumes
+# -- is deliberately absent and must stay that way.
 DOCKER_ARGUMENTS_WHITELIST: FrozenSet[str] = frozenset({
+    # MICSI originals
     "command",
     "entrypoint",
     "working_dir",
@@ -201,6 +235,22 @@ DOCKER_ARGUMENTS_WHITELIST: FrozenSet[str] = frozenset({
     "domainname",
     "stop_signal",
     "stop_grace_period",
+    # From upstream's ALLOWED_DOCKER_ARGS
+    "cpu_period",
+    "cpu_quota",
+    "cpuset_cpus",
+    "cpu_shares",
+    "cpuset_mems",
+    "blkio_weight",
+    "device_read_bps",
+    "device_write_bps",
+    "device_read_iops",
+    "device_write_iops",
+    "pids_limit",
+    "environment",
+    "env",
+    "read_only",
+    "stop_timeout",
 })
 
 
@@ -228,7 +278,7 @@ class Module(BaseModel, Compat):
     requires_root: Optional[bool] = False
     requires_persistence: Optional[bool] = False
     persistence_folder_name: Optional[str] = ""
-    network_mode: Optional[str] = "none"  # "none", "bridge", or custom network name
+    network_enabled: Optional[bool] = True
 
 
 class UnsetRule(TypedDict):
@@ -253,13 +303,13 @@ class Rule(BaseModel, Compat):
     action_trigger: Literal["series", "study", "patient"] = "series"
     study_trigger_condition: StudyTriggerCondition = "timeout"
     study_force_completion_action: StudyForceCompletionAction = "discard"
-    study_trigger_series: str = ""
     patient_trigger_condition: PatientTriggerCondition = "timeout"
     patient_force_completion_action: PatientForceCompletionAction = "discard"
     patient_trigger_modalities: str = ""
     patient_trigger_studies: str = ""
     patient_trigger_series: str = ""
     patient_trigger_timeout: int = 7200  # 2 hours default
+    study_trigger_series: str = ""
     priority: Literal["normal", "urgent", "offpeak"] = "normal"
     processing_module: Union[str, List[str]] = ""
     processing_settings: Union[List[Dict[str, Any]], Dict[str, Any]] = {}
@@ -274,6 +324,9 @@ class Rule(BaseModel, Compat):
     notification_trigger_completion: bool = True
     notification_trigger_completion_on_request: bool = False
     notification_trigger_error: bool = True
+    dynamic_routing: bool = False
+    dynamic_routing_allowed_targets: Union[str, List[str]] = ""
+    conditional_alternate_target: str = ""
 
 
 class ProcessingLogsConfig(BaseModel):
@@ -405,7 +458,7 @@ class TaskDispatch(BaseModel, Compat):
     status: Union[Dict[str, TaskDispatchStatus], EmptyDict] = cast(EmptyDict, {})
     retries: Optional[int] = 0
     next_retry_at: Optional[float] = 0
-    series_uid: Optional[str]
+    series_uid: Optional[str] = None
 
 
 class TaskStudy(BaseModel, Compat):
@@ -415,32 +468,10 @@ class TaskStudy(BaseModel, Compat):
     creation_time: str
     last_receive_time: str
     received_series: Optional[List[str]]
+    received_modalities: Optional[List[str]] = []
     received_series_uid: Optional[List[str]]
     complete_force: bool = False
     complete_force_action: Optional[StudyForceCompletionAction] = "discard"
-
-
-class TaskPatientStudy(BaseModel, Compat):
-    study_uid: str
-    modality: str
-    series_count: int
-    series_uids: List[str]
-    received_time: str
-
-
-class TaskPatient(BaseModel, Compat):
-    patient_id: str
-    complete_trigger: Optional[PatientTriggerCondition]
-    complete_required_modalities: str
-    complete_required_studies: str
-    complete_required_series: str
-    creation_time: str
-    last_receive_time: str
-    received_studies: Optional[List[TaskPatientStudy]]
-    received_modalities: Optional[List[str]]
-    received_series: Optional[List[str]]
-    complete_force: bool = False
-    complete_force_action: Optional[PatientForceCompletionAction] = "discard"
 
 
 class TaskProcessing(BaseModel, Compat):
@@ -448,7 +479,7 @@ class TaskProcessing(BaseModel, Compat):
     module_config: Optional[Module]
     settings: Dict[str, Any] = {}
     retain_input_images: bool
-    output: Optional[Dict]
+    output: Optional[Dict] = None
 
 # class PydanticFile(object):
 #     def __init__(self, klass, file_name):
@@ -476,6 +507,29 @@ class TaskProcessing(BaseModel, Compat):
 #         return PydanticFile(cls, file_name)
 
 
+class TaskPatientStudy(BaseModel, Compat):
+    study_uid: str
+    modality: str
+    series_count: int
+    series_uids: List[str]
+    received_time: str
+
+
+class TaskPatient(BaseModel, Compat):
+    patient_id: str
+    complete_trigger: Optional[PatientTriggerCondition]
+    complete_required_modalities: str
+    complete_required_studies: str
+    complete_required_series: str
+    creation_time: str
+    last_receive_time: str
+    received_studies: Optional[List[TaskPatientStudy]]
+    received_modalities: Optional[List[str]]
+    received_series: Optional[List[str]]
+    complete_force: bool = False
+    complete_force_action: Optional[PatientForceCompletionAction] = "discard"
+
+
 class Task(BaseModel, Compat):
     info: TaskInfo
     id: str
@@ -483,7 +537,7 @@ class Task(BaseModel, Compat):
     process: Union[TaskProcessing, EmptyDict, List[TaskProcessing]] = cast(EmptyDict, {})
     study: Union[TaskStudy, EmptyDict] = cast(EmptyDict, {})
     patient: Union[TaskPatient, EmptyDict] = cast(EmptyDict, {})
-    nomad_info: Optional[Any]
+    nomad_info: Optional[Any] = None
 
     class Config:
         extra = "forbid"
@@ -505,7 +559,7 @@ class Task(BaseModel, Compat):
                 json.dump(self.dict(), f)
 
 
-class TaskHasStudy(Task):
+class TaskHasStudy(Task): 
     study: TaskStudy
 
 

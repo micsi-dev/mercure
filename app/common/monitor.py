@@ -276,6 +276,16 @@ async def find_tasks(request) -> Any:
     return await get("query/find_task", {k: v for k, v in request.query_params.items()})
 
 
+async def find_tasks_micsi(request) -> Any:
+    """MICSI archive query: supports group_by (patient/study/series).
+
+    Kept separate from find_tasks so upstream's queue table keeps using
+    upstream's endpoint and column mapping. Only the MICSI queue overlay
+    calls this one.
+    """
+    return await get("query-micsi/find_task", {k: v for k, v in request.query_params.items()})
+
+
 async def task_process_logs(task_id="") -> Any:
     return await get("query/task_process_logs", {"task_id": task_id})
 
@@ -289,12 +299,12 @@ async def get_task_info(task_id="") -> Any:
 
 
 async def get_child_tasks(parent_id="", scope="") -> Any:
-    return await get("query/get_child_tasks", {"parent_id": parent_id, "scope": scope})
+    return await get("query-micsi/get_child_tasks", {"parent_id": parent_id, "scope": scope})
 
 
 async def find_output_folder(task_id: str) -> Any:
     """Find the output folder for a task, handling parent task lookup for series."""
-    return await get("query/find_output_folder", {"task_id": task_id})
+    return await get("query-micsi/find_output_folder", {"task_id": task_id})
 
 
 async def async_delete(endpoint: str, **kwargs) -> Any:

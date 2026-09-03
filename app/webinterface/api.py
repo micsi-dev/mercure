@@ -234,6 +234,16 @@ async def find_tasks(request):
         return JSONResponse({"error": e.status_code}, status_code=e.status_code)
 
 
+@router.get("/find-tasks-micsi")
+@requires(["authenticated"])
+async def find_tasks_micsi(request):
+    """Archive query with group_by support, used by the MICSI queue overlay."""
+    try:
+        return JSONResponse(await monitor.find_tasks_micsi(request))
+    except monitor.MonitorHTTPError as e:
+        return JSONResponse({"error": e.status_code}, status_code=e.status_code)
+
+
 @router.get("/task-process-logs")
 @requires(["authenticated"])
 async def task_process_logs(request):

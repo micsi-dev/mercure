@@ -61,7 +61,7 @@ async def duplicate_rule(request) -> Response:
         return PlainTextResponse("Configuration is being updated. Try again in a minute.")
     form = await request.form()
     new_name = form.get("new_name", "")
-    if not re.fullmatch("[0-9a-zA-Z_\-]+", new_name):
+    if not re.fullmatch(r"[0-9a-zA-Z_\-]+", new_name):
         return BadRequestResponse("Invalid rule name provided")
 
     old_name = form.get("old_name", "")
@@ -86,7 +86,7 @@ async def add_rule(request) -> Response:
     form = dict(await request.form())
 
     newrule = form.get("name", "")
-    if not re.fullmatch("[0-9a-zA-Z_\-]+", newrule):
+    if not re.fullmatch(r"[0-9a-zA-Z_\-]+", newrule):
         return BadRequestResponse("Invalid rule name provided")
 
     if newrule in config.mercure.rules:
@@ -217,6 +217,8 @@ async def rules_edit_post(request) -> Response:
         processing_module=processing_module,
         processing_settings=new_processing_settings,
         processing_retain_images=form.get("processing_retain_images", "False"),
+        dynamic_routing=bool(form.get("conditional_alternate_target")) and bool(form.get("use_alternate_target")),
+        conditional_alternate_target=form.get("conditional_alternate_target", "") if form.get("use_alternate_target") else "",
         notification_webhook=form.get("notification_webhook", ""),
         notification_email=form.get("notification_email", ""),
         notification_payload=notification_payload,
