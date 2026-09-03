@@ -69,7 +69,22 @@
     if (!$t.length) return;
     if ($t.data("micsiOverlayApplied")) return;
     if ($.fn.DataTable.isDataTable("#jobs_archive")) {
-      $("#jobs_archive").DataTable().destroy();
+      // Upstream initialises this table with serverSide ajax, so a request to
+      // /api/find-tasks is already in flight by the time we run. Destroying the
+      // table does not cancel it: the response still lands, and its success
+      // handler draws using the old settings -- six aoColumns entries -- against
+      // the nine-column header installed below. That reads past the end of the
+      // array and throws on every page load:
+      //
+      //   TypeError: undefined is not an object (evaluating 'a.aoColumns[Y].sWidth')
+      //
+      // Abort it first so the stale callback never runs.
+      var oldApi = $("#jobs_archive").DataTable();
+      var oldSettings = oldApi.settings()[0];
+      if (oldSettings && oldSettings.jqXHR && oldSettings.jqXHR.abort) {
+        oldSettings.jqXHR.abort();
+      }
+      oldApi.destroy();
     }
     $t.find("thead").html(MICSI_ARCHIVE_HEAD);
     $t.find("tbody").empty();
@@ -412,6 +427,13 @@
           $('#pdf_viewer_modal').addClass('is-active');
       }
 
+  // Clears the frame as well as hiding the modal, so the embedded PDF stops
+  // rendering instead of sitting behind the overlay.
+  function closePdfViewer() {
+          $('#pdf_viewer_modal').removeClass('is-active');
+          $('#pdf_frame').attr('src', '');
+      }
+
   // --- file status --------------------------------------------------------
   // Called from the table's drawCallback. Without it every draw throws and the
   // Files column keeps spinning.
@@ -516,6 +538,47 @@
           return html;
       }
 
+  // --- modal controls -------------------------------------------------------
+  // The close buttons live in templates/micsi_viewer.html and the close functions
+  // in advanced-dicom-viewer.js, but nothing joined them: our pre-merge queue.html
+  // did that in an inline script, which did not come across with the markup.
+  // Without this the viewer opens and cannot be dismissed.
+  function bindViewerControls() {
+    $('#close_pdf_viewer, #close_pdf_viewer_x').off('click.micsi').on('click.micsi', function () {
+      closePdfViewer();
+    });
+    $('#close_series_selector, #close_series_selector_x').off('click.micsi').on('click.micsi', function () {
+      if (window.closeSeriesSelector) window.closeSeriesSelector();
+    });
+    $('#close_advanced_viewer_x').off('click.micsi').on('click.micsi', function () {
+      if (window.closeAdvancedDicomViewer) window.closeAdvancedDicomViewer();
+    });
+    // Escape closes whichever modal is open, innermost first.
+    $(document).off('keydown.micsiViewer').on('keydown.micsiViewer', function (e) {
+      if (e.keyCode !== 27) return;
+      if ($('#pdf_viewer_modal').hasClass('is-active')) { closePdfViewer(); return; }
+      if ($('#series_selector_modal').hasClass('is-active')) {
+        if (window.closeSeriesSelector) window.closeSeriesSelector();
+        return;
+      }
+      if ($('#advanced_dicom_viewer_modal').hasClass('is-active')) {
+        if (window.closeAdvancedDicomViewer) window.closeAdvancedDicomViewer();
+      }
+    });
+  }
+
+  // Upstream binds a select handler to the archive table, but that binding dies
+  // with the instance destroyed above, leaving the toolbar buttons stuck
+  // disabled. Rebind against ours; every button acts on the selected row.
+  function bindArchiveSelection() {
+    var api = $('#jobs_archive').DataTable();
+    api.off('select.micsi deselect.micsi').on('select.micsi deselect.micsi', function () {
+      var selected = api.rows({ selected: true }).count() > 0;
+      api.buttons().every(function () { this.enable(selected); });
+    });
+    api.buttons().every(function () { this.enable(false); });
+  }
+
   // --- boot -----------------------------------------------------------------
   $(function () {
     // Upstream initialises its own tables on ready; run after it so the
@@ -524,6 +587,8 @@
       try {
         injectGroupingSelector();
         rebuildArchiveTable();
+        bindArchiveSelection();
+        bindViewerControls();
       } catch (e) {
         // Never take the page down: upstream markup may have moved.
         if (window.console) console.error("[micsi-overlay] queue overlay failed:", e);
@@ -534,4 +599,5 @@
   window.checkAndOpenPreview = checkAndOpenPreview;
   window.deleteArchiveJob = deleteArchiveJob;
   window.openPdfViewer = openPdfViewer;
+  window.closePdfViewer = closePdfViewer;
 })();
