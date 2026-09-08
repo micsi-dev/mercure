@@ -57,6 +57,16 @@
     });
   }
 
+  // Every archive toolbar button acts on the selected row. Reading
+  // .data()[0].task_id with nothing selected throws, which is what happened
+  // while the enable/disable binding below was broken and the buttons stayed
+  // live. Returning null lets each action bail quietly instead.
+  function selectedArchiveTaskId() {
+    var rows = $('#jobs_archive').DataTable().rows({ selected: true }).data();
+    if (!rows || rows.length === 0 || !rows[0]) return null;
+    return rows[0].task_id;
+  }
+
   // --- 2. widen the archive table to the MICSI column set -------------------
   // 9 columns, matching the `columns` array below. The first is the dt-control
   // expander and carries no header text.
@@ -69,7 +79,22 @@
     if (!$t.length) return;
     if ($t.data("micsiOverlayApplied")) return;
     if ($.fn.DataTable.isDataTable("#jobs_archive")) {
-      $("#jobs_archive").DataTable().destroy();
+      // Upstream initialises this table with serverSide ajax, so a request to
+      // /api/find-tasks is already in flight by the time we run. Destroying the
+      // table does not cancel it: the response still lands, and its success
+      // handler draws using the old settings -- six aoColumns entries -- against
+      // the nine-column header installed below. That reads past the end of the
+      // array and throws on every page load:
+      //
+      //   TypeError: undefined is not an object (evaluating 'a.aoColumns[Y].sWidth')
+      //
+      // Abort it first so the stale callback never runs.
+      var oldApi = $("#jobs_archive").DataTable();
+      var oldSettings = oldApi.settings()[0];
+      if (oldSettings && oldSettings.jqXHR && oldSettings.jqXHR.abort) {
+        oldSettings.jqXHR.abort();
+      }
+      oldApi.destroy();
     }
     $t.find("thead").html(MICSI_ARCHIVE_HEAD);
     $t.find("tbody").empty();
@@ -167,7 +192,8 @@
                         text: '<i class="fas fa-code"></i>',
                         titleAttr: 'Job information',
                         action: function ( e, dt, node, config ) {
-                            var jid = $('#jobs_archive').DataTable().rows( { selected: true } ).data()[0].task_id;
+                            var jid = selectedArchiveTaskId();
+                            if (jid === null) { return; }
                             showArchiveJobInformation(jid);
                         }
                     },
@@ -175,7 +201,8 @@
                         text: '<i class="fas fa-list-ul"></i>',
                         titleAttr: 'Audit trail',
                         action: function ( e, dt, node, config ) {
-                            var jid = $('#jobs_archive').DataTable().rows( { selected: true } ).data()[0].task_id;
+                            var jid = selectedArchiveTaskId();
+                            if (jid === null) { return; }
                             showAuditTrail(jid);
                         }
                     },
@@ -183,7 +210,8 @@
                         text: '<i class="fas fa-receipt"></i>',
                         titleAttr: 'Processing log',
                         action: function ( e, dt, node, config ) {
-                            var jid = $('#jobs_archive').DataTable().rows( { selected: true } ).data()[0].task_id;
+                            var jid = selectedArchiveTaskId();
+                            if (jid === null) { return; }
                             showLogs(jid);
                         }
                     },
@@ -191,7 +219,8 @@
                         text: '<i class="fas fa-chart-bar"></i>',
                         titleAttr: 'Processing results',
                         action: function ( e, dt, node, config ) {
-                            var jid = $('#jobs_archive').DataTable().rows( { selected: true } ).data()[0].task_id;
+                            var jid = selectedArchiveTaskId();
+                            if (jid === null) { return; }
                             showResults(jid);
                         }
                     },
@@ -199,7 +228,8 @@
                         text: '<i class="fas fa-eye"></i>',
                         titleAttr: 'Preview output',
                         action: function ( e, dt, node, config ) {
-                            var jid = $('#jobs_archive').DataTable().rows( { selected: true } ).data()[0].task_id;
+                            var jid = selectedArchiveTaskId();
+                            if (jid === null) { return; }
                             console.log('Archive preview clicked for task:', jid);
                             // First check for actual task ID (series/study files may be in parent folder)
                             $.ajax({
@@ -226,7 +256,8 @@
                         text: '<i class="fas fa-trash-alt"></i>',
                         titleAttr: 'Delete from archive',
                         action: function ( e, dt, node, config ) {
-                            var jid = $('#jobs_archive').DataTable().rows( { selected: true } ).data()[0].task_id;
+                            var jid = selectedArchiveTaskId();
+                            if (jid === null) { return; }
                             deleteArchiveJob(jid);
                         }
                     }
@@ -412,6 +443,13 @@
           $('#pdf_viewer_modal').addClass('is-active');
       }
 
+  // Clears the frame as well as hiding the modal, so the embedded PDF stops
+  // rendering instead of sitting behind the overlay.
+  function closePdfViewer() {
+          $('#pdf_viewer_modal').removeClass('is-active');
+          $('#pdf_frame').attr('src', '');
+      }
+
   // --- file status --------------------------------------------------------
   // Called from the table's drawCallback. Without it every draw throws and the
   // Files column keeps spinning.
@@ -516,6 +554,50 @@
           return html;
       }
 
+  // --- modal controls -------------------------------------------------------
+  // The close buttons live in templates/micsi_viewer.html and the close functions
+  // in advanced-dicom-viewer.js, but nothing joined them: our pre-merge queue.html
+  // did that in an inline script, which did not come across with the markup.
+  // Without this the viewer opens and cannot be dismissed.
+  function bindViewerControls() {
+    $('#close_pdf_viewer, #close_pdf_viewer_x').off('click.micsi').on('click.micsi', function () {
+      closePdfViewer();
+    });
+    $('#close_series_selector, #close_series_selector_x').off('click.micsi').on('click.micsi', function () {
+      if (window.closeSeriesSelector) window.closeSeriesSelector();
+    });
+    $('#close_advanced_viewer_x').off('click.micsi').on('click.micsi', function () {
+      if (window.closeAdvancedDicomViewer) window.closeAdvancedDicomViewer();
+    });
+    // Escape closes whichever modal is open, innermost first.
+    $(document).off('keydown.micsiViewer').on('keydown.micsiViewer', function (e) {
+      if (e.keyCode !== 27) return;
+      if ($('#pdf_viewer_modal').hasClass('is-active')) { closePdfViewer(); return; }
+      if ($('#series_selector_modal').hasClass('is-active')) {
+        if (window.closeSeriesSelector) window.closeSeriesSelector();
+        return;
+      }
+      if ($('#advanced_dicom_viewer_modal').hasClass('is-active')) {
+        if (window.closeAdvancedDicomViewer) window.closeAdvancedDicomViewer();
+      }
+    });
+  }
+
+  // Upstream binds a select handler to the archive table, but that binding dies
+  // with the instance destroyed above, leaving the toolbar buttons stuck
+  // disabled. Rebind against ours; every button acts on the selected row.
+  function bindArchiveSelection() {
+    var api = $('#jobs_archive').DataTable();
+    // Same form upstream uses for its other tables (queue.html), rather than a
+    // custom event namespace: this runs once, from boot, so there is nothing to
+    // unbind first.
+    api.on('select deselect', function () {
+      var selected = api.rows({ selected: true }).count() > 0;
+      api.buttons().enable(selected);
+    });
+    api.buttons().enable(false);
+  }
+
   // --- boot -----------------------------------------------------------------
   $(function () {
     // Upstream initialises its own tables on ready; run after it so the
@@ -524,6 +606,8 @@
       try {
         injectGroupingSelector();
         rebuildArchiveTable();
+        bindArchiveSelection();
+        bindViewerControls();
       } catch (e) {
         // Never take the page down: upstream markup may have moved.
         if (window.console) console.error("[micsi-overlay] queue overlay failed:", e);
@@ -534,4 +618,5 @@
   window.checkAndOpenPreview = checkAndOpenPreview;
   window.deleteArchiveJob = deleteArchiveJob;
   window.openPdfViewer = openPdfViewer;
+  window.closePdfViewer = closePdfViewer;
 })();
