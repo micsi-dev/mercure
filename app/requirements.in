@@ -45,6 +45,7 @@ python-multipart>=0.0.18
 distro
 passlib
 argon2-cffi
+pynacl
 sqlalchemy<=1.4.52
 databases
 # databases[postgresql]

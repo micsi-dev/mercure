@@ -67,6 +67,67 @@
                 </table>
             </div>
         </div>              
+        <div class="columns" id="license">
+            <div class="column is-full">
+                {% if license_uploaded %}
+                <div class="notification is-success" style="margin-bottom: 1rem;">
+                    <i class="fas fa-check"></i>&nbsp;&nbsp;License file has been installed.
+                </div>
+                {% endif %}
+                {% if license_error %}
+                <div class="notification is-danger" style="margin-bottom: 1rem;">
+                    <i class="fas fa-times"></i>&nbsp;&nbsp;License file was not installed: {{ license_error }}
+                </div>
+                {% endif %}
+                <h5 class="title is-5 configtitle"><i class="fas fa-key {% if license.state == 'valid' %}has-text-success{% elif license.state == 'warning' %}has-text-warning{% else %}has-text-danger{% endif %}"></i>&nbsp;&nbsp;License</h5>
+                <table class="table is-narrow is-hoverable is-fullwidth configtable">
+                    <col width="230px">
+                    <tr>
+                        <td>Status:</td>
+                        <td>{{ license.message }}</td>
+                    </tr>
+                    {% if license.licensee %}
+                    <tr>
+                        <td>Licensee:</td>
+                        <td>{{ license.licensee }}</td>
+                    </tr>
+                    <tr>
+                        <td>License ID:</td>
+                        <td>{{ license.license_id }}</td>
+                    </tr>
+                    <tr>
+                        <td>Licensed Products:</td>
+                        <td>{{ license.products | join(', ') | upper }}</td>
+                    </tr>
+                    <tr>
+                        <td>Issued:</td>
+                        <td>{{ license.issued }}</td>
+                    </tr>
+                    <tr>
+                        <td>Expires:</td>
+                        <td>{{ license.expires }}</td>
+                    </tr>
+                    {% endif %}
+                    {% if is_admin %}
+                    <tr>
+                        <td>Install License File:</td>
+                        <td>
+                            <form method="post" action="/configuration/license" enctype="multipart/form-data">
+                                <div class="field has-addons">
+                                    <div class="control">
+                                        <input class="input is-small" type="file" name="license_file" accept=".miclic" required>
+                                    </div>
+                                    <div class="control">
+                                        <button class="button is-small" type="submit"><span class="icon"><i class="fas fa-upload"></i></span><span>Install</span></button>
+                                    </div>
+                                </div>
+                            </form>
+                        </td>
+                    </tr>
+                    {% endif %}
+                </table>
+            </div>
+        </div>
         <div class="columns">
             <div class="column is-full">
                 <h5 class="title is-5 configtitle"><i

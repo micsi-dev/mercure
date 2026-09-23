@@ -145,6 +145,17 @@ DATABASE_URL={config.mercure.bookkeeper}"""
     return set_config
 
 
+@pytest.fixture(scope="function", autouse=True)
+def licensed(request, monkeypatch):
+    """Treats every test as running on a licensed installation. test_license.py checks the real thing."""
+    if request.module.__name__.endswith("test_license"):
+        return
+    import common.license
+    status = common.license.LicenseStatus(state=common.license.STATE_VALID, message="Licensed for testing.",
+                                          products=["pet", "rmt"])
+    monkeypatch.setattr(common.license, "get_status", lambda now=None: status)
+
+
 def random_port() -> int:
     """
     Generate a free port number to use as an ephemeral endpoint.

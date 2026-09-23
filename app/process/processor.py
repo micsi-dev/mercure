@@ -21,6 +21,7 @@ import common.config as config
 # App-specific includes
 import common.helper as helper
 import common.influxdb
+import common.license as license
 import common.monitor as monitor
 import common.notification as notification
 import graphyte
@@ -39,6 +40,7 @@ processing_loop = None  # type: helper.AsyncTimer  # type: ignore
 
 
 processor_lockfile = None
+license_last_reported: Optional[str] = None
 processor_is_locked = False
 
 try:
@@ -274,6 +276,8 @@ async def run_processor() -> None:
         )
         return
 
+    report_license_status()
+
     call_counter = 0
 
     while await search_folder(call_counter):
@@ -281,6 +285,21 @@ async def run_processor() -> None:
         # If termination is requested, stop processing series after the active one has been completed
         if helper.is_terminated():
             return
+
+
+def report_license_status() -> None:
+    """Reports a license that expires soon, has expired or is missing, once per day."""
+    global license_last_reported
+    today = datetime.now().strftime("%Y-%m-%d")
+    if license_last_reported == today:
+        return
+    license_last_reported = today
+    status = license.get_status()
+    if not status.needs_attention:
+        return
+    level = monitor.severity.WARNING if status.processing_allowed else monitor.severity.ERROR
+    logger.warning(f"License: {status.message}")
+    monitor.send_event(monitor.m_events.LICENSE, level, status.message)
 
 
 def exit_processor() -> None:
