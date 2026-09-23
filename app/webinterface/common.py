@@ -13,6 +13,7 @@ from typing import Optional, Tuple, Union, Any
 
 import bleach
 import common.config as config
+import common.license as license
 from common.constants import mercure_defs
 # Starlette-related includes
 from starlette.templating import Jinja2Templates
@@ -54,6 +55,13 @@ def get_user_information(request) -> dict:
     }
 
 
+def get_license_status(request) -> dict:
+    """Passes the license status to the templates, so that a problem can be shown on every page."""
+    if not request.user.is_authenticated:
+        return {"license_status": None}
+    return {"license_status": license.get_status()}
+
+
 def get_mercure_version(request) -> dict:
     return {"mercure_version": mercure_defs.VERSION}
 
@@ -74,7 +82,8 @@ def strip_untrusted(input: Union[str, list]) -> Any:
 
 
 templates = Jinja2Templates(directory="webinterface/templates",
-                            context_processors=[get_user_information, get_mercure_version, get_csp_nonce])
+                            context_processors=[get_user_information, get_mercure_version, get_csp_nonce,
+                                                get_license_status])
 
 templates.env.filters['strip_untrusted'] = strip_untrusted
 

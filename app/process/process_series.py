@@ -12,10 +12,11 @@ import sys
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional, cast
+from typing import Any, Dict, List, Optional, cast
 
 import common.config as config
 import common.helper as helper
+import common.license as license
 import common.log_helpers as log_helpers
 # App-specific includes
 import common.monitor as monitor
@@ -794,6 +795,18 @@ async def process_series(folder: Path) -> None:
                 # logger.info(f"Moving {child}")
                 child.rename(folder / "in" / child.name)
         (folder / "out").mkdir()
+
+        # Make sure the license covers every module of the task before anything is run
+        license_status = license.get_status()
+        steps: List[Any] = [task.process]
+        if isinstance(task.process, list):
+            steps = list(task.process)
+        for step in steps:
+            step_module = getattr(step, "module_config", None)
+            reason = license.check_module(license_status, getattr(step_module, "docker_tag", None) or "")
+            if reason:
+                logger.error(f"Processing blocked by license: {reason}", task.id, event_type=monitor.m_events.LICENSE)
+                raise Exception(f"Processing blocked by license: {reason}")
 
         if helper.get_runner() == "nomad" or config.mercure.process_runner == "nomad":
             logger.debug("Processing with Nomad.")

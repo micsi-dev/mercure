@@ -54,7 +54,9 @@ certifi==2024.7.4
     #   influxdb-client
     #   requests
 cffi==2.0.0
-    # via argon2-cffi-bindings
+    # via
+    #   argon2-cffi-bindings
+    #   pynacl
 charset-normalizer==3.3.2
     # via requests
 click==8.1.7
@@ -183,6 +185,8 @@ pyfakefs==5.3.5
     # via -r requirements.in
 pygments==2.18.0
     # via sphinx
+pynacl==1.6.2
+    # via -r requirements.in
 pynetdicom==2.0.2
     # via -r requirements.in
 pytest==8.2.2

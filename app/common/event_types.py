@@ -25,6 +25,7 @@ class m_events(StringEnum):
     SHUTDOWN_REQUEST = auto()
     CONFIG_UPDATE = auto()
     PROCESSING = auto()
+    LICENSE = auto()
 
 
 class w_events(StringEnum):
@@ -45,6 +46,7 @@ class w_events(StringEnum):
     TARGET_EDIT = auto()
     SERVICE_CONTROL = auto()
     CONFIG_EDIT = auto()
+    LICENSE_INSTALL = auto()
 
 
 class task_event(StringEnum):

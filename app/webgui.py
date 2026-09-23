@@ -28,6 +28,7 @@ from typing import Any, Dict, List, Optional, Union
 # App-specific includes
 import common.config as config
 import common.helper as helper
+import common.license as license
 import common.monitor as monitor
 import dateutil
 import distro
@@ -538,8 +539,38 @@ async def configuration(request) -> Response:
         "os_string": os_string,
         "config_edited": config_edited,
         "runtime": runtime,
+        "license": license.get_status(),
+        "license_uploaded": request.query_params.get("license") == "1",
+        "license_error": request.session.pop("license_error", None),
     }
     return templates.TemplateResponse(template, context)
+
+
+@router.post("/configuration/license")
+@requires(["authenticated", "admin"], redirect="homepage")
+async def configuration_license_post(request) -> Response:
+    """Installs an uploaded license file after checking its signature."""
+    form = await request.form()
+    upload = form.get("license_file")
+    if upload is None or isinstance(upload, str):
+        request.session["license_error"] = "No file was uploaded."
+        return RedirectResponse(url="/configuration#license", status_code=303)
+
+    data = await upload.read(64 * 1024)
+    try:
+        status = license.install(data)
+    except ValueError as e:
+        request.session["license_error"] = str(e)
+        return RedirectResponse(url="/configuration#license", status_code=303)
+    except OSError as e:
+        logger.error(f"Unable to write license file: {e}")
+        request.session["license_error"] = "The license file could not be written. Check the server logs."
+        return RedirectResponse(url="/configuration#license", status_code=303)
+
+    logger.info(f"License installed: licensee={status.licensee}, id={status.license_id}, expires={status.expires}")
+    monitor.send_webgui_event(monitor.w_events.LICENSE_INSTALL, request.user.display_name,
+                              f"{status.license_id} ({status.licensee}), expires {status.expires}")
+    return RedirectResponse(url="/configuration?license=1#license", status_code=303)
 
 
 @router.get("/configuration/edit")
