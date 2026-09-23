@@ -11,6 +11,7 @@ import xmlrpc.client
 from pathlib import Path
 from typing import Any, Callable, Generator, Optional
 
+import nacl.signing
 import pytest
 from common.config import mercure_defaults
 from supervisor.options import ServerOptions
@@ -214,7 +215,26 @@ def mercure_base() -> Generator[Path, None, None]:
             (temp_path / d).mkdir()
         for k in ["incoming", "studies", "patients", "outgoing", "success", "error", "discard", "processing", "jobs"]:
             (temp_path / 'data' / k).mkdir()
+        write_test_license(temp_path / 'config')
         yield temp_path
+
+
+def write_test_license(config_folder: Path) -> None:
+    """Signs a license for this run with a fresh key. licensed_processor.py makes the processor trust it."""
+    key = nacl.signing.SigningKey.generate()
+    now = int(time.time())
+    payload = json.dumps({
+        "expires": time.strftime("%Y-%m-%d", time.gmtime(now + 365 * 86400)),
+        "expires_unix": now + 365 * 86400,
+        "features": ["pet", "rmt"],
+        "id": "MICSI-INTEGRATION-TEST",
+        "issued": time.strftime("%Y-%m-%d", time.gmtime(now)),
+        "issued_unix": now,
+        "licensee": "Integration Test",
+    }, sort_keys=True, separators=(",", ":"))
+    signature = key.sign(payload.encode()).signature.hex()
+    (config_folder / "license.miclic").write_text(json.dumps({"payload": payload, "sig": signature}))
+    (config_folder / "test_license.pub").write_text(key.verify_key.encode().hex())
 
 
 @pytest.fixture(scope="function")
@@ -227,7 +247,8 @@ def mercure(supervisord: Callable[[Any], SupervisorManager], python_bin, bookkee
     services = [
         py_service("bookkeeper", startsecs=0),
         py_service("router", numprocs=5),
-        py_service("processor", numprocs=2),
+        py_service("processor", numprocs=2,
+                   command=f"{python_bin} {here()}/app/tests/integration/licensed_processor.py"),
         py_service("dispatcher", numprocs=5),
         py_service("worker_fast", command=f"{python_bin} -m rq.cli worker mercure_fast"),
         py_service("worker_slow", command=f"{python_bin} -m rq.cli worker mercure_slow")
