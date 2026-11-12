@@ -18,6 +18,9 @@ class mercure_defs:
 class mercure_names:
     LOCK = ".lock"
     PROCESSING = ".processing"
+    # Claim on a task whose Nomad job has finished but whose results have not been collected yet.
+    # Written exclusively by exactly one processor instance (see processor.claim_completed_task()).
+    COMPLETING = ".completing"
     RUNNING = ".running"
     ERROR = ".error"
     TAGS = ".tags"
@@ -27,6 +30,10 @@ class mercure_names:
     DCM = ".dcm"
     DCMFILTER = "*.dcm"
     FORCE_COMPLETE = ".force-complete"
+
+    # Ownership markers. They describe who is working on a folder *right now* and must never be
+    # copied along with the folder's contents (backups, restarts).
+    CLAIM_MARKERS = (LOCK, PROCESSING, COMPLETING)
 
 
 class mercure_sections:

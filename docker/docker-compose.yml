@@ -1,5 +1,7 @@
 x-build: &build
-  context: ..
+  # Default context is the repo root relative to this file's location (repo/docker).
+  # install.sh runs compose from $MERCURE_BASE and exports MERCURE_SRC to override this.
+  context: ${MERCURE_SRC:-..}
   args:
     VERSION_TAG: ${TAG:-latest}
     BASE_IMAGE_NAME: mercureimaging/mercure-base
@@ -29,7 +31,7 @@ services:
   base:
     image: mercureimaging/mercure-base:${TAG:-latest}
     build:
-      context: ..
+      context: ${MERCURE_SRC:-..}
       dockerfile: docker/base/Dockerfile
     profiles: [build]
 
@@ -52,6 +54,7 @@ services:
       <<: *build
       dockerfile: docker/ui/Dockerfile
     restart: always
+    stop_grace_period: 2m  # the shutdown drain needs up to ~80 s; see common/helper.py
     ports:
       - "8000:8000"
     volumes:
@@ -106,6 +109,7 @@ services:
       <<: *build
       dockerfile: docker/cleaner/Dockerfile
     restart: always
+    stop_grace_period: 2m  # the shutdown drain needs up to ~80 s; see common/helper.py
     depends_on:
       bookkeeper:
         condition: service_healthy
@@ -122,6 +126,7 @@ services:
       <<: *build
       dockerfile: docker/dispatcher/Dockerfile
     restart: always
+    stop_grace_period: 2m  # the shutdown drain needs up to ~80 s; see common/helper.py
     depends_on:
       bookkeeper:
         condition: service_healthy
@@ -139,6 +144,7 @@ services:
       <<: *build
       dockerfile: docker/processor/Dockerfile
     restart: always
+    stop_grace_period: 2m  # the shutdown drain needs up to ~80 s; see common/helper.py
     depends_on:
       bookkeeper:
         condition: service_healthy
@@ -158,6 +164,7 @@ services:
       <<: *build
       dockerfile: docker/router/Dockerfile
     restart: always
+    stop_grace_period: 2m  # the shutdown drain needs up to ~80 s; see common/helper.py
     depends_on:
       bookkeeper:
         condition: service_healthy

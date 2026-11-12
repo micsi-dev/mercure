@@ -15,6 +15,7 @@ import common.helper as helper
 import common.monitor as monitor
 import common.tagslist as tagslist
 from common.constants import mercure_names
+from common.json_io import write_json_atomic
 from common.log_helpers import get_logger
 from common.types import Config
 from typing_extensions import Literal
@@ -70,6 +71,8 @@ mercure_defaults = {
     "influxdb_token": "",
     "influxdb_bucket": "",
     "bookkeeper": "0.0.0.0:8080",
+    "bookkeeper_timeout": 15.0,
+    "bookkeeper_queue_size": 1000,
     "offpeak_start": "22:00",
     "offpeak_end": "06:00",
     "process_runner": "docker",
@@ -165,25 +168,19 @@ def save_config() -> None:
     except Exception:
         raise ResourceWarning(f"Unable to lock configuration file: {lock_file}")
 
-    with open(configuration_file, "w") as json_file:
-        json.dump(mercure.dict(), json_file, indent=4)
+    with lock:
+        # Atomic replacement: every service re-reads this file on its next tick, and a service
+        # that cannot read it at all exits instead of starting.
+        write_json_atomic(configuration_file, mercure.dict(), indent=4)
 
-    try:
-        stat = os.stat(configuration_file)
-        configuration_timestamp = stat.st_mtime
-    except AttributeError:
-        configuration_timestamp = 0
+        try:
+            stat = os.stat(configuration_file)
+            configuration_timestamp = stat.st_mtime
+        except AttributeError:
+            configuration_timestamp = 0
 
-    monitor.send_event(monitor.m_events.CONFIG_UPDATE, monitor.severity.INFO, "Saved new configuration.")
-    logger.info(f"Stored configuration into: {configuration_file}")
-
-    try:
-        lock.free()
-    except Exception:
-
-        # Can't delete lock file, so something must be seriously wrong
-        logger.error(f"Unable to remove lock file {lock_file}", None)  # handle_error
-        return
+        monitor.send_event(monitor.m_events.CONFIG_UPDATE, monitor.severity.INFO, "Saved new configuration.")
+        logger.info(f"Stored configuration into: {configuration_file}")
 
 
 def write_configfile(json_content) -> None:
@@ -201,19 +198,13 @@ def write_configfile(json_content) -> None:
     except Exception:
         raise ResourceWarning(f"Unable to lock configuration file: {lock_file}")
 
-    with open(configuration_file, "w") as json_file:
-        json.dump(json_content, json_file, indent=4)
+    with lock:
+        # The raw config editor writes operator-supplied JSON; a torn file here would take the
+        # whole appliance down on the next service restart, so replace it atomically.
+        write_json_atomic(configuration_file, json_content, indent=4)
 
-    monitor.send_event(monitor.m_events.CONFIG_UPDATE, monitor.severity.INFO, "Wrote configuration file.")
-    logger.info(f"Wrote configuration into: {configuration_file}")
-
-    try:
-        lock.free()
-    except Exception:
-
-        # Can't delete lock file, so something must be seriously wrong
-        logger.error(f"Unable to remove lock file {lock_file}", None)  # handle_error
-        return
+        monitor.send_event(monitor.m_events.CONFIG_UPDATE, monitor.severity.INFO, "Wrote configuration file.")
+        logger.info(f"Wrote configuration into: {configuration_file}")
 
 
 def check_folders() -> bool:

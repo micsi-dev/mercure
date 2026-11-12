@@ -13,6 +13,7 @@ from os import PathLike
 from typing import Any, Dict, FrozenSet, List, Optional, Type, Union, cast
 
 from common.event_types import FailStage
+from common.json_io import write_json_atomic
 from pydantic import BaseModel, validator
 from typing_extensions import Literal, TypedDict
 
@@ -409,6 +410,11 @@ class Config(BaseModel, Compat):
     influxdb_org: str
     influxdb_bucket: str
     bookkeeper: str
+    #: Overall deadline for one bookkeeper report (and for the queue UI's own reads), in seconds.
+    #: Without it a stalled request is covered by no timeout at all.
+    bookkeeper_timeout: float = 15.0
+    #: Events that may wait in the reporting queue before new ones are dropped and counted.
+    bookkeeper_queue_size: int = 1000
     offpeak_start: str
     offpeak_end: str
     targets: Dict[str, Target]
@@ -553,10 +559,11 @@ class Task(BaseModel, Compat):
 
     def to_file(self,  file_or_path: Union[PathLike, TextIOWrapper]) -> None:
         if isinstance(file_or_path, TextIOWrapper):
+            # Writing through a caller-owned handle cannot be made atomic; all mercure call
+            # sites pass a path and get the crash-safe replacement.
             json.dump(self.dict(), file_or_path)
         else:
-            with open(file_or_path, "w") as f:
-                json.dump(self.dict(), f)
+            write_json_atomic(file_or_path, self.dict())
 
 
 class TaskHasStudy(Task): 

@@ -23,7 +23,9 @@ import common.monitor as monitor
 import common.notification as notification
 from common.constants import mercure_events, mercure_names
 from common.event_types import FailStage
+from common.folder_io import move_into_folder
 from common.helper import get_now_str
+from common.json_io import is_write_temp_file, write_json_atomic
 from common.types import Module, Task, TaskDispatch, TaskDispatchStatus, TaskProcessing
 from common.version import mercure_version
 from dispatch.send import update_fail_stage
@@ -490,7 +492,7 @@ async def docker_runtime(task: Task, folder: Path, file_count_begin: int, task_p
         # nomad job dispatch -meta IMAGE_ID=alpine:3.11 -meta PATH=test  mercure-processor
         # nomad_connection.job.dispatch_job('mercure-processor', meta={"IMAGE_ID":"alpine:3.11", "PATH": "test"})
 
-        await monitor.async_send_task_event(
+        monitor.send_task_event(
             monitor.task_event.PROCESS_MODULE_BEGIN,
             task.id,
             file_count_begin,
@@ -695,7 +697,7 @@ async def docker_runtime(task: Task, folder: Path, file_count_begin: int, task_p
         except Exception as e:
             logger.exception("Unable to set permissions on output files, manually verify to avoid issues. " + str(e))
 
-        await monitor.async_send_task_event(
+        monitor.send_task_event(
             monitor.task_event.PROCESS_MODULE_COMPLETE,
             task.id,
             file_count_begin,
@@ -732,6 +734,19 @@ async def docker_runtime(task: Task, folder: Path, file_count_begin: int, task_p
     return processing_success
 
 
+def backup_input_images(task_folder: Path) -> None:
+    """Back up a task's loose input files before moving them into ``in``."""
+    backup_folder = task_folder / "as_received"
+    backup_folder.mkdir(exist_ok=True)
+    for file in task_folder.glob("*"):
+        # A scratch file from an interrupted atomic write is not task input. Ownership markers
+        # (.processing etc.) are not input either: the backup is what a UI restart copies back,
+        # and a restored .processing claim makes the restarted task invisible to every processor.
+        if file.is_file() and not is_write_temp_file(file.name) and file.name not in mercure_names.CLAIM_MARKERS:
+            shutil.copy2(file, backup_folder)
+    logger.info(f"Backed up input files for task folder {task_folder.name} to {backup_folder}")
+
+
 @log_helpers.clear_task_decorator_async
 async def process_series(folder: Path) -> None:
     logger.info("----------------------------------------------------------------------------------")
@@ -744,8 +759,10 @@ async def process_series(folder: Path) -> None:
     task: Optional[Task] = None
     taskfile_path = folder / mercure_names.TASKFILE
     outputs = []
+    owned = False
 
     try:
+        # Claim before touching any task contents. This is the single ownership boundary.
         try:
             lock_file.touch(exist_ok=False)
             # lock = helper.FileLock(lock_file)
@@ -753,9 +770,7 @@ async def process_series(folder: Path) -> None:
             # Return if the case has already been locked by another instance in the meantime
             return
         except Exception as e:
-            # Can't create lock file, so something must be seriously wrong
-            # Not sure what should happen here- trying to copy the case out probably won't work,
-            # but if we do nothing we'll just loop forever
+            # Can't create the lock file; this process does not own the task.
             logger.error(f"Unable to create lock file {lock_file}")
             monitor.send_event(
                 monitor.m_events.PROCESSING,
@@ -764,6 +779,8 @@ async def process_series(folder: Path) -> None:
             )
             raise e
 
+        owned = True
+        backup_input_images(folder)
         if not taskfile_path.exists():
             logger.error(f"Task file {taskfile_path} does not exist")
             raise Exception(f"Task file {taskfile_path} does not exist")
@@ -791,7 +808,9 @@ async def process_series(folder: Path) -> None:
 
         (folder / "in").mkdir()
         for child in folder.iterdir():
-            if child.is_file() and child.name != ".processing":
+            # Skip the claim marker and any scratch file left by an interrupted atomic write:
+            # neither belongs inside the container's input folder.
+            if child.is_file() and child.name != ".processing" and not is_write_temp_file(child.name):
                 # logger.info(f"Moving {child}")
                 child.rename(folder / "in" / child.name)
         (folder / "out").mkdir()
@@ -821,7 +840,7 @@ async def process_series(folder: Path) -> None:
             raise Exception("Unable to determine valid runtime for processing")
 
         if runtime == docker_runtime:  # docker runtime might run several processing steps, need to put this event here
-            await monitor.async_send_task_event(
+            monitor.send_task_event(
                 monitor.task_event.PROCESS_BEGIN,
                 task.id,
                 file_count_begin,
@@ -842,8 +861,7 @@ async def process_series(folder: Path) -> None:
                     # so we copy this one's information into a copy of the task file and hand that to the container.
                     copied_task.process = task_processing
 
-                    with open(folder / "in" / mercure_names.TASKFILE, "w") as task_file:
-                        json.dump(copied_task.dict(), task_file)
+                    write_json_atomic(folder / "in" / mercure_names.TASKFILE, copied_task.dict())
 
                     processing_success = await docker_runtime(task, folder, file_count_begin, task_processing)
                     if not processing_success:
@@ -860,13 +878,10 @@ async def process_series(folder: Path) -> None:
                 if task.process[0].retain_input_images:
                     (folder / "input_files").rename(folder / "in")
                 if outputs:
-                    with open(folder / "out" / "result.json", "w") as fp:
-                        json.dump(outputs, fp, indent=4)
+                    write_json_atomic(folder / "out" / "result.json", outputs, indent=4)
 
             finally:
-                with open(folder / "out" / mercure_names.TASKFILE, "w") as task_file:
-                    #  logger.warning(f"DUMPING to {folder / 'out' / mercure_names.TASKFILE} TASK {task=}")
-                    json.dump(task.dict(), task_file, indent=4)
+                write_json_atomic(folder / "out" / mercure_names.TASKFILE, task.dict(), indent=4)
         elif isinstance(task.process, list):
             raise Exception("Multiple processing steps are only supported on the Docker runtime.")
         else:
@@ -875,9 +890,7 @@ async def process_series(folder: Path) -> None:
             if processing_success:
                 output = handle_processor_output(task, task_process, 0, folder)
                 task.process.output = output  # type: ignore
-                with open(folder / "out" / mercure_names.TASKFILE, "w") as fp:
-                    # logger.warning(f"DUMPING to {folder / 'out' / mercure_names.TASKFILE} TASK {task=}")
-                    json.dump(task.dict(), fp, indent=4)
+                write_json_atomic(folder / "out" / mercure_names.TASKFILE, task.dict(), indent=4)
                 outputs.append((task_process.module_name, output))
     except Exception:
         processing_success = False
@@ -895,6 +908,9 @@ async def process_series(folder: Path) -> None:
             task_id = task.id
         else:
             task_id = "Unknown"
+        # If claiming failed or the claim disappeared, do not move or delete this task.
+        if not owned:
+            return
         if helper.get_runner() in ("docker", "systemd") and config.mercure.process_runner != "nomad":
             logger.info("Docker processing complete")
             # Copy the task to the output folder (in case the module didn't move it)
@@ -917,8 +933,14 @@ async def process_series(folder: Path) -> None:
                     needs_dispatching = False
 
             # Push the results either to the success or error folder
-            move_results(task_id, folder, lock, processing_success, needs_dispatching)
-            shutil.rmtree(folder, ignore_errors=True)
+            moved = move_results(task_id, folder, lock, processing_success, needs_dispatching)
+            if moved:
+                shutil.rmtree(folder, ignore_errors=True)
+            else:
+                # The results are still here. Deleting the folder would turn a transient I/O error
+                # into data loss, so keep it (locked by move_results) for a later retry.
+                logger.error(f"Results of task {task_id} could not be moved. Keeping {folder} "
+                             "for recovery", task_id)  # handle_error
 
             if processing_success:
                 monitor.send_task_event(
@@ -1082,67 +1104,75 @@ def _rewrite_task_file(task: Task, folder: Path) -> None:
     """Rewrite the task file in the output folder with updated dispatch info."""
     taskfile_path = folder / "out" / mercure_names.TASKFILE
     try:
-        with open(taskfile_path, "w") as f:
-            json.dump(task.dict(), f, indent=4)
+        write_json_atomic(taskfile_path, task.dict(), indent=4)
     except Exception:
         logger.error(f"Failed to rewrite task file at {taskfile_path}", task.id)
 
 
 def move_results(
-    task_id: str, folder: Path, lock: Optional[helper.FileLock], processing_success: bool, needs_dispatching: bool
-) -> None:
+    task_id: str, folder: Path, lock: Optional[helper.FileLock], processing_success: bool,
+    needs_dispatching: bool,
+) -> bool:
+    """Move a finished task out of the processing folder. Returns True if it actually moved.
+
+    A caller must only delete its own copy when this returns True: a failed move leaves the task as
+    the only copy of the results, and deleting it destroys the exam over a transient I/O error.
+    """
     # Create a new lock file to ensure that no other process picks up the folder while copying
     logger.debug(f"Moving results folder {folder} {'with' if needs_dispatching else 'without'} dispatching")
     lock_file = folder / mercure_names.LOCK
     if lock_file.exists():
         logger.error(f"Folder already contains lockfile {folder}/" + mercure_names.LOCK)
-        return
+        return False
     try:
         lock_file.touch(exist_ok=False)
     except Exception:
         logger.error(f"Error locking folder to be moved {folder}", task_id)  # handle_error
-        return
+        return False
 
     if lock is not None:
         lock.free()
     if not processing_success:
         logger.debug(f"Failing: {folder}")
-        move_out_folder(task_id, folder, Path(config.mercure.error_folder), move_all=True, fail_stage=FailStage.PROCESSING)
-    else:
-        if needs_dispatching:
-            logger.debug(f"Dispatching: {folder}")
-            move_out_folder(task_id, folder, Path(config.mercure.outgoing_folder))
-        else:
-            logger.debug(f"Success: {folder}")
-            move_out_folder(task_id, folder, Path(config.mercure.success_folder))
+        return move_out_folder(task_id, folder, Path(config.mercure.error_folder),
+                               move_all=True, fail_stage=FailStage.PROCESSING)
+    if needs_dispatching:
+        logger.debug(f"Dispatching: {folder}")
+        return move_out_folder(task_id, folder, Path(config.mercure.outgoing_folder))
+    logger.debug(f"Success: {folder}")
+    return move_out_folder(task_id, folder, Path(config.mercure.success_folder))
 
 
-def move_out_folder(task_id: str, source_folder: Path, destination_folder: Path, move_all=False, fail_stage=None) -> None:
-    # source_folder = Path(source_folder_str)
-    # destination_folder = Path(destination_folder_str)
+def move_out_folder(task_id: str, source_folder: Path, destination_folder: Path, move_all=False,
+                    fail_stage=None) -> bool:
+    """Move a task (or only its ``out`` folder) into a destination folder. True if it moved.
 
-    target_folder = destination_folder / source_folder.name
-    if target_folder.exists():
-        new_name = source_folder.name.split("_")[0] + "_" + datetime.now().isoformat()
-        target_folder = destination_folder / new_name
-
-    logger.debug(f"Moving {source_folder} to {target_folder}, move_all: {move_all}")
+    The destination name is claimed by the move itself (``common.folder_io.move_into_folder``).
+    ``shutil.move`` neither overwrites nor fails when the destination exists as a directory - it
+    moves the source *inside* it, which buries ``task.json`` one level down where the queue UI, the
+    bookkeeper and the cleaner no longer look for it.
+    """
+    logger.debug(f"Moving {source_folder} into {destination_folder}, move_all: {move_all}")
     logger.debug("--- source contents ---")
     for k in source_folder.glob("**/*"):
         logger.debug("{:>25}".format(str(k.relative_to(source_folder))))
     logger.debug("--------------")
     try:
         if move_all:
-            shutil.move(str(source_folder), target_folder)
+            target_folder = move_into_folder(source_folder, destination_folder)
             if fail_stage and not update_fail_stage(target_folder, FailStage.PROCESSING):
                 logger.error(f"Error updating fail stage for task {task_id}")
         else:
-            shutil.move(str(source_folder / "out"), target_folder)
+            # Only the results go to the destination, but the destination keeps the task folder's
+            # name (not "out"), so that the task id stays the identifier across all service folders.
+            move_into_folder(source_folder / "out", destination_folder, name=source_folder.name)
             lockfile = source_folder / mercure_names.LOCK
-            lockfile.unlink()
+            lockfile.unlink(missing_ok=True)
 
     except Exception:
         logger.error(f"Error moving folder {source_folder} to {destination_folder}", task_id)  # handle_error
+        return False
+    return True
 
 
 def trigger_notification(task: Task, event: mercure_events, details: str = "", send_always=False) -> None:

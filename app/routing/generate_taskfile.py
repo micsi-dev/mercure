@@ -6,18 +6,18 @@ which describe the job to be done and maintain a journal of the executed actions
 """
 
 # Standard python includes
-import json
 import pprint
 import socket
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union, cast
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union, cast
 
 # App-specific includes
 import common.config as config
 import common.monitor as monitor
 from common.constants import mercure_actions, mercure_defs, mercure_names, mercure_options, mercure_rule
 from common.helper import get_now_str
+from common.json_io import write_json_atomic
 from common.types import (
     EmptyDict,
     Rule,
@@ -34,6 +34,18 @@ from typing_extensions import Literal
 
 # Create local logger instance
 logger = config.get_logger()
+
+# Queues a bookkeeper call instead of sending it right away (HandOffs.announce). The router passes it,
+# so a task is only reported to the bookkeeper once its hand-off has committed: a hand-off that is
+# rolled back must not leave a phantom task record (or a study record listing a series it does not hold).
+Announcer = Callable[[Callable[[], None]], None]
+
+
+def _report_task(task: Task, announce: Optional[Announcer]) -> None:
+    if announce is None:
+        monitor.send_update_task(task)
+    else:
+        announce(lambda: monitor.send_update_task(task))
 
 
 def compose_task(
@@ -295,6 +307,8 @@ def create_series_task(
     series_UID: str,
     tags_list: Dict[str, str],
     target: str,
+    *,
+    announce: Optional[Announcer] = None,
 ) -> bool:
     """
     Writes a task file for the received series, containing all information needed by the processor and dispatcher.
@@ -302,17 +316,17 @@ def create_series_task(
     """
     # Compose the JSON content for the file
     task = compose_task(task_id, series_UID, "series", triggered_rules, applied_rule, tags_list, target)
-    monitor.send_update_task(task)
 
     task_filename = folder_name / mercure_names.TASKFILE
     try:
-        with open(task_filename, "w") as task_file:
-            json.dump(task.dict(), task_file)
+        # Atomic: the processor must never observe a partially written task file.
+        write_json_atomic(task_filename, task.dict())
     except Exception:
         logger.error(
             f"Unable to create series task file {task_filename} with contents {task.dict()}", task.id
         )  # handle_error
         return False
+    _report_task(task, announce)
     return True
 
 
@@ -323,13 +337,14 @@ def create_study_task(
     applied_rule: str,
     study_UID: str,
     tags_list: Dict[str, str],
+    *,
+    announce: Optional[Announcer] = None,
 ) -> bool:
     """
     Generate task file with information on the study
     """
     # Compose the JSON content for the file
     task = compose_task(task_id, study_UID, "study", triggered_rules, applied_rule, tags_list, "")
-    monitor.send_update_task(task)
 
     task_filename = target_folder / mercure_names.TASKFILE
     logger.debug(f"Writing study task file {task_filename}")
@@ -339,6 +354,7 @@ def create_study_task(
         logger.error(f"Unable to create study task file {task_filename}", task.id)  # handle_error
         return False
 
+    _report_task(task, announce)
     return True
 
 
@@ -349,6 +365,8 @@ def update_study_task(
     applied_rule: str,
     study_UID: str,
     tags_list: Dict[str, str],
+    *,
+    announce: Optional[Announcer] = None,
 ) -> Tuple[bool, str]:
     """
     Update the study task file with information from the latest received series
@@ -403,7 +421,7 @@ def update_study_task(
         logger.exception(f"Unable to write task file {task_filename}", task.id)  # handle_error
         return False, ""
 
-    monitor.send_update_task(task)
+    _report_task(task, announce)
 
     return True, task.id
 
