@@ -79,9 +79,11 @@ def test_emergency_cleaning_same_disk(fs: FakeFilesystem, mercure_config):
     emergency_clearing_level: float = config.emergency_clean_percentage / 100.0
 
     # need to set_disk_usage to get number of bytes that are currently used.
-    free_disk_space_requested = 10_000
-    fs.set_disk_usage(100_000)
+    fs.set_disk_usage(100_000_000)
     (total, used, free) = fs.get_disk_usage()
+    # The fixtures copy real app files into the fake filesystem, so `used` grows with the code.
+    # Ask for at least that much free space, so a full clean always gets below the emergency level.
+    free_disk_space_requested = max(10_000, used)
     fs.set_disk_usage(free_disk_space_requested + used)
     (total, used, free) = fs.get_disk_usage()
 
