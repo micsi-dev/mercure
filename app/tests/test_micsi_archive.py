@@ -94,3 +94,36 @@ async def test_search_by_rule_and_no_match(bookkeeper_db):
     series = await route_series_level(bookkeeper_db, "1.2.9.1", "1.2.9", "ACC1")
     assert list(rows(await archive("series", search="route_series"))) == [series.parent_id]
     assert rows(await archive("series", search="no-such-patient")) == {}
+
+
+# ------------------------------------------------- Preview output: find_output_folder
+
+async def output_folder(task_id: str) -> Dict[str, Any]:
+    """What Preview output asks first: /api/task-files-exist -> micsi_query.find_output_folder()."""
+    import bookkeeping.micsi_query as micsi_query
+
+    return await call(micsi_query.find_output_folder, path="/find_output_folder", query={"task_id": task_id})
+
+
+async def test_preview_finds_series_job_output_under_its_child(bookkeeper_db, fs):
+    """The archive lists a series job under its registration; the output folder is the child's."""
+    sent = await route_series_level(bookkeeper_db, "1.2.9.1", "1.2.9", "ACC1")
+    fs.create_file(f"/var/success/{sent.job_id}/out.dcm")
+    assert await output_folder(sent.parent_id) == {"task_id": sent.job_id, "location": "success", "exists": True}
+
+
+async def test_preview_finds_failed_series_job_in_error_folder(bookkeeper_db, fs):
+    sent = await route_series_level(bookkeeper_db, "1.2.9.1", "1.2.9", "ACC1")
+    fs.create_dir(f"/var/error/{sent.job_id}")
+    assert await output_folder(sent.parent_id) == {"task_id": sent.job_id, "location": "error", "exists": True}
+
+
+async def test_preview_still_uses_a_tasks_own_folder(bookkeeper_db, fs):
+    study = await route_study_level(bookkeeper_db, "1.2.8.1", "1.2.8", "ACC2")
+    fs.create_dir(f"/var/success/{study.job_id}")
+    assert await output_folder(study.job_id) == {"task_id": study.job_id, "location": "success", "exists": True}
+
+
+async def test_preview_without_output_reports_none(bookkeeper_db):
+    sent = await route_series_level(bookkeeper_db, "1.2.9.1", "1.2.9", "ACC1")
+    assert (await output_folder(sent.parent_id))["exists"] is False

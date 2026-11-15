@@ -150,7 +150,8 @@ async def find_output_folder(request) -> JSONResponse:
     For series/study tasks, output files may be stored under a parent task's folder.
     This endpoint finds the correct folder by:
     1. Checking if the task has its own folder
-    2. If not, finding a parent task (patient/study) with same MRN that has a folder
+    2. If not, checking its child tasks (a series job is listed under its series registration)
+    3. If not, finding a parent task (patient/study) with same MRN that has a folder
 
     Returns: {task_id: str, location: str|null, exists: bool}
     """
@@ -169,6 +170,23 @@ async def find_output_folder(request) -> JSONResponse:
                 "location": location,
                 "exists": True
             })
+
+    # A series job is listed in the archive under its series registration (the top-level task),
+    # but processed, and its folder named, under the child task that holds the job. Look there,
+    # newest job first, preferring a run that succeeded.
+    child_rows = await db.database.fetch_all(
+        "SELECT id FROM tasks WHERE parent_id = :task_id ORDER BY time DESC", {"task_id": task_id}
+    )
+    child_ids = [str(row["id"]) for row in child_rows]
+    for location, folder in [("success", config.mercure.success_folder),
+                              ("error", config.mercure.error_folder)]:
+        for child_id in child_ids:
+            if (Path(folder) / child_id).exists():
+                return CustomJSONResponse({
+                    "task_id": child_id,
+                    "location": location,
+                    "exists": True
+                })
 
     # Task doesn't have its own folder - find MRN and look for parent folder
     # Query to get task's MRN (from task data or dicom_series)
