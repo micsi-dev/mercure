@@ -1,12 +1,14 @@
 import json
 import multiprocessing
 import os
+import signal
 import socket
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import uuid
 import xmlrpc.client
 from pathlib import Path
 from typing import Any, Callable, Generator, Optional
@@ -42,6 +44,31 @@ def _wait_for_port(host: str, port: int, timeout: float = 30.0, interval: float 
             time.sleep(interval)
 
 
+def pid_alive(pid: int) -> bool:
+    """Whether the process still exists. A zombie is considered gone: it holds no port."""
+    if pid <= 0:
+        return False
+    try:
+        # /proc/<pid>/stat is "(comm) state ...", and comm may contain spaces and parentheses
+        state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+        return state != "Z"
+    except (OSError, IndexError):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            return True
+        return True
+
+
+def kill_pid(pid: int) -> None:
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
 class SupervisorManager:
     process: Optional[multiprocessing.Process] = None
     config_path: Optional[Path] = None
@@ -49,6 +76,9 @@ class SupervisorManager:
     def __init__(self, mercure_base: Path) -> None:
         self.mercure_base = mercure_base
         self.socket = mercure_base / "supervisor.sock"
+        # every pid supervisord was ever seen running, so teardown can sweep even if supervisord
+        # itself is already gone and can no longer answer over RPC
+        self.child_pids: set = set()
 
     def create_config(self, services) -> None:
         self.config_path = self.mercure_base / 'supervisord.conf'
@@ -85,7 +115,7 @@ serverurl=unix://{self.socket}
 [program:{service.name}]
 command={service.command}
 process_name=%(program_name)s{'_%(process_num)d' if service.numprocs>1 else ''}
-directory={here()}/app
+directory={self.mercure_base}
 autostart=false
 autorestart=false
 redirect_stderr=true
@@ -120,6 +150,16 @@ environment=MERCURE_CONFIG_FOLDER="{self.mercure_base}/config", MERCURE_BASEPATH
 
     def start_service(self, name) -> None:
         self.rpc.supervisor.startProcess(name)
+        self.remember_child_pids()
+
+    def remember_child_pids(self) -> None:
+        try:
+            for service in self.all_services():
+                pid = service.get("pid") or 0
+                if pid:
+                    self.child_pids.add(int(pid))
+        except Exception:
+            pass
 
     def stop_service(self, name) -> None:
         self.rpc.supervisor.stopProcess(name)
@@ -145,28 +185,62 @@ environment=MERCURE_CONFIG_FOLDER="{self.mercure_base}/config", MERCURE_BASEPATH
         thread.start()
         return thread
 
-    def wait_for_start(self) -> None:
-        while True:
-            if Path(self.socket).exists():
-                break
-            else:
-                time.sleep(0.1)
+    def wait_for_start(self, timeout: float = 30.0) -> None:
+        deadline = time.monotonic() + timeout
+        while not Path(self.socket).exists():
+            if time.monotonic() >= deadline:
+                raise TimeoutError(f"supervisord did not create {self.socket} within {timeout}s")
+            if self.process is not None and not self.process.is_alive():
+                raise TimeoutError("supervisord exited before it was ready")
+            time.sleep(0.1)
 
     def stop(self) -> None:
         if not self.process:
             return
+
+        # Collect the children while the RPC socket still answers.
+        self.remember_child_pids()
+
+        # Terminating supervisord first is what used to happen here: the children are in their own
+        # sessions, so they were reparented to init and kept their listening ports, which made a
+        # later run fail with "address already in use". supervisord knows each program's
+        # stopasgroup/killasgroup, so it has to be asked first.
+        try:
+            self.rpc.supervisor.stopAllProcesses()
+        except Exception as e:
+            print(f"stopAllProcesses failed: {e}")
+
+        self.wait_for_children_gone(timeout=15.0)
+
         try:
             self.transport.close()
         except Exception:
             pass
+
         try:
-            self.process.terminate()  # SIGTERM → supervisord shuts down children
+            self.process.terminate()
             self.process.join(timeout=5)
             if self.process.is_alive():
                 self.process.kill()  # escalate if still running after 5s
                 self.process.join()
         except Exception as e:
             print(e)
+
+        # Last resort: a child that outlived supervisord must not survive into the next test.
+        self.wait_for_children_gone(timeout=2.0)
+        stragglers = [pid for pid in self.child_pids if pid_alive(pid)]
+        for pid in stragglers:
+            kill_pid(pid)
+        if stragglers:
+            print(f"forced SIGKILL on {len(stragglers)} orphaned service process(es): "
+                  f"{sorted(stragglers)}")
+
+    def wait_for_children_gone(self, timeout: float) -> None:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if not any(pid_alive(pid) for pid in self.child_pids):
+                return
+            time.sleep(0.1)
 
 
 @pytest.fixture(scope="function")
@@ -270,8 +344,57 @@ def mercure(supervisord: Callable[[Any], SupervisorManager], python_bin, bookkee
     print("=============")
 
 
+@pytest.fixture(scope="session")
+def pg0_instance():
+    """One throwaway embedded PostgreSQL (pg0-embedded) for the whole integration session.
+
+    The bookkeeper's Archive queries are Postgres-first (ILIKE, STRING_AGG, JSONB), so
+    the tests must run against a real PostgreSQL, not the SQLite fallback. pg0 needs no
+    docker and starts in ~1s; tests are skipped (not failed) if it cannot run here.
+    """
+    try:
+        from pg0 import Pg0
+    except ImportError:
+        pytest.skip("pg0-embedded is not installed (see app/dev-requirements.txt)")
+    pg = Pg0(name=f"mercure-it-{uuid.uuid4().hex[:8]}")
+    try:
+        info = pg.start()
+    except Exception as exc:  # infra problem, not a product bug
+        pytest.skip(f"pg0 could not be started in this environment: {exc}")
+    try:
+        yield info
+    finally:
+        pg.drop()
+
+
 @pytest.fixture(scope="function")
-def mercure_config(mercure_base, receiver_port, bookkeeper_port):
+def bookkeeper_database(pg0_instance):
+    """A fresh empty database per test, inside the session-long pg0 instance.
+
+    Create-and-drop-database is milliseconds; restarting pg0 itself (~1s+) per test is
+    the expensive part we avoid. The database is dropped at *setup* time rather than
+    teardown so that no DROP can race the still-running bookkeeper's connections; any
+    leftover dies with the pg0 instance and its data directory.
+    """
+    import asyncio
+
+    import asyncpg
+
+    name = f"mercure_{uuid.uuid4().hex[:10]}"
+
+    async def _recreate():
+        con = await asyncpg.connect(pg0_instance.uri)
+        # a same-name leftover is impossible (uuid4), but be trivially idempotent
+        await con.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+        await con.execute(f'CREATE DATABASE "{name}"')
+        await con.close()
+
+    asyncio.run(_recreate())
+    yield pg0_instance.uri.rsplit("/", 1)[0] + f"/{name}"
+
+
+@pytest.fixture(scope="function")
+def mercure_config(mercure_base, receiver_port, bookkeeper_port, bookkeeper_database):
     mercure_config = {k: v for k, v in mercure_defaults.items()}
     for folder in (mercure_base / 'data').iterdir():
         mercure_config[f"{folder.name}_folder"] = str(folder)
@@ -284,10 +407,12 @@ def mercure_config(mercure_base, receiver_port, bookkeeper_port):
     with (mercure_base / 'config' / 'mercure.json').open('w') as fp:
         json.dump(mercure_config, fp)
 
+    # the bookkeeper runs alembic upgrade head itself at startup (bookkeeper.py
+    # migrate_database), so the freshly created pg0 database needs no extra step here
     bookkeeper_config = f"""
 PORT={bookkeeper_port}
 HOST=0.0.0.0
-DATABASE_URL=sqlite:///{mercure_base}/data/bookkeeper.sqlite3
+DATABASE_URL={bookkeeper_database}
 DEBUG=True
 """
     with (mercure_base / 'config' / 'bookkeeper.env').open('w') as fp:

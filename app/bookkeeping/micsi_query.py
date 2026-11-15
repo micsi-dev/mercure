@@ -261,6 +261,55 @@ async def find_output_folder(request) -> JSONResponse:
 # hardening: it is interpolated into SQL and is attacker-controlled.
 # ---------------------------------------------------------------------------
 
+# How mercure stores a series-level job: route_series registers the incoming series as a
+# top-level task with no data, and the job that is processed and dispatched is registered as its
+# child (parent_id), carrying the info (uid_type "series", rules, MRN). Study- and patient-level
+# jobs are top-level tasks with info of their own. So a top-level row is a series job when it has
+# a child whose info says "series"; series that were buffered into a study/patient job do not.
+SERIES_JOB_SQL = """EXISTS (
+                    SELECT 1 FROM tasks series_job
+                    WHERE series_job.parent_id = parent_tasks.id
+                      AND series_job.data->'info'->>'uid_type' = 'series'
+                )"""
+
+# Top-level rows that are series registrations (no scope of their own).
+SERIES_ROW_SQL = (
+    "(parent_tasks.data->'info'->>'uid_type' = 'series' OR parent_tasks.data->'info'->>'uid_type' IS NULL)"
+)
+
+# The rule shown for a row: its own applied/triggered rules, else those of its series job.
+RULE_SQL = """COALESCE(
+            NULLIF(parent_tasks.data->'info'->>'applied_rule', ''),
+            (SELECT string_agg(key, ', ') FROM jsonb_object_keys(parent_tasks.data->'info'->'triggered_rules') AS key),
+            (SELECT string_agg(DISTINCT NULLIF(ct.data->'info'->>'applied_rule', ''), ', ')
+               FROM tasks ct WHERE ct.parent_id = parent_tasks.id),
+            (SELECT string_agg(DISTINCT key, ', ')
+               FROM tasks ct, jsonb_object_keys(ct.data->'info'->'triggered_rules') AS key
+               WHERE ct.parent_id = parent_tasks.id)
+        )"""
+
+# Default (grouped) view: patient jobs, study jobs not covered by a patient job, and series
+# jobs that ran on their own (a site whose rules are all series-level otherwise sees nothing).
+GROUPED_SCOPE_SQL = f"""AND (
+                 -- Show patient tasks
+                 parent_tasks.data->'info'->>'uid_type' = 'patient'
+                 OR (
+                     -- Show study tasks only if no patient task exists with same MRN
+                     parent_tasks.data->'info'->>'uid_type' = 'study'
+                     AND NOT EXISTS (
+                         SELECT 1 FROM tasks pt
+                         WHERE pt.data->'info'->>'uid_type' = 'patient'
+                           AND pt.data->'info'->>'mrn' = COALESCE(parent_tasks.data->'info'->>'mrn', tag_patientid)
+                     )
+                 )
+                 -- Series jobs
+                 OR ({SERIES_ROW_SQL} AND {SERIES_JOB_SQL})
+             )"""
+
+# The search (having_term) and the rule fallback read the job's child rows.
+CHILD_JOIN_SQL = "LEFT JOIN tasks AS child_tasks ON child_tasks.parent_id = parent_tasks.id"
+
+
 @router.get("/find_task")
 @requires("authenticated")
 async def find_task(request) -> JSONResponse:
@@ -324,10 +373,11 @@ async def find_task(request) -> JSONResponse:
         # Series view: show series that were either:
         # 1. Standalone series jobs with applied_rule, OR
         # 2. Series registrations that have an associated patient/study task (same MRN, within time window)
-        scope_filter_term = """AND (parent_tasks.data->'info'->>'uid_type' = 'series' OR parent_tasks.data->'info'->>'uid_type' IS NULL)
+        scope_filter_term = f"""AND {SERIES_ROW_SQL}
             AND (
-                -- Standalone series jobs with applied_rule
+                -- Standalone series jobs: the rule is on this row, or on its series job (child)
                 parent_tasks.data->'info'->>'applied_rule' IS NOT NULL
+                OR {SERIES_JOB_SQL}
                 OR
                 -- Series processed as part of a patient/study job (has matching parent by MRN)
                 EXISTS (
@@ -353,9 +403,10 @@ async def find_task(request) -> JSONResponse:
            FROM
             tasks as parent_tasks
             LEFT JOIN dicom_series ON dicom_series.series_uid = parent_tasks.series_uid
+            {CHILD_JOIN_SQL}
            WHERE parent_tasks.parent_id is null
              {scope_filter_term}
-           GROUP BY 1,2,3,4
+           GROUP BY parent_tasks.id, parent_tasks.data, tag_accessionnumber, tag_patientid, tag_patientname
            {having_term}
         )
         SELECT
@@ -374,21 +425,10 @@ async def find_task(request) -> JSONResponse:
            FROM
             tasks as parent_tasks
             LEFT JOIN dicom_series ON dicom_series.series_uid = parent_tasks.series_uid
+            {CHILD_JOIN_SQL}
            WHERE parent_tasks.parent_id is null
-             AND (
-                 -- Show patient tasks
-                 parent_tasks.data->'info'->>'uid_type' = 'patient'
-                 OR (
-                     -- Show study tasks only if no patient task exists with same MRN
-                     parent_tasks.data->'info'->>'uid_type' = 'study'
-                     AND NOT EXISTS (
-                         SELECT 1 FROM tasks pt
-                         WHERE pt.data->'info'->>'uid_type' = 'patient'
-                           AND pt.data->'info'->>'mrn' = COALESCE(parent_tasks.data->'info'->>'mrn', tag_patientid)
-                     )
-                 )
-             )
-           GROUP BY 1,2,3,4
+             {GROUPED_SCOPE_SQL}
+           GROUP BY parent_tasks.id, parent_tasks.data, tag_accessionnumber, tag_patientid, tag_patientname
            {having_term}
         )
         SELECT
@@ -460,13 +500,11 @@ async def find_task(request) -> JSONResponse:
             )
             ELSE 0  -- Series tasks have no children
         END AS child_count,
-        COALESCE(
-            NULLIF(parent_tasks.data->'info'->>'applied_rule', ''),
-            (SELECT string_agg(key, ', ') FROM jsonb_object_keys(parent_tasks.data->'info'->'triggered_rules') AS key)
-        ) AS rule
+        {RULE_SQL} AS rule
     FROM
         tasks as parent_tasks
         LEFT JOIN dicom_series ON dicom_series.series_uid = parent_tasks.series_uid
+        {CHILD_JOIN_SQL}
     """
 
     if group_by:
@@ -486,19 +524,7 @@ async def find_task(request) -> JSONResponse:
         # Hierarchical view: show patient tasks OR study tasks (if no patient exists)
         query_string = f"""{base_select}
         WHERE parent_tasks.parent_id is null
-          AND (
-              -- Show patient tasks
-              parent_tasks.data->'info'->>'uid_type' = 'patient'
-              OR (
-                  -- Show study tasks only if no patient task exists with same MRN
-                  parent_tasks.data->'info'->>'uid_type' = 'study'
-                  AND NOT EXISTS (
-                      SELECT 1 FROM tasks pt
-                      WHERE pt.data->'info'->>'uid_type' = 'patient'
-                        AND pt.data->'info'->>'mrn' = COALESCE(parent_tasks.data->'info'->>'mrn', tag_patientid)
-                  )
-              )
-          )
+             {GROUPED_SCOPE_SQL}
         GROUP BY
             parent_tasks.id, parent_tasks.study_uid, parent_tasks.series_uid, parent_tasks.time, parent_tasks.data,
             tag_accessionnumber, tag_patientid, tag_patientname, dicom_series.tag_seriesdescription, dicom_series.tag_modality

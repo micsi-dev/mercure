@@ -2,16 +2,19 @@
 test_processor.py
 ==============
 """
+import asyncio
 import json
 import os
 import shutil
 import socket
+import threading
+import time
 import unittest
 import uuid
 from itertools import permutations
 from pathlib import Path
 from typing import Callable, Tuple
-from unittest.mock import call
+from unittest.mock import AsyncMock, call
 
 import common
 import process.process_series
@@ -95,9 +98,9 @@ def create_and_route(fs, mocked, task_id, config, uid="TESTFAKEUID") -> Tuple[Li
 
     router.route_series.assert_called_once_with(task_id, uid)  # type: ignore
     routing.route_series.push_series_serieslevel.assert_called_once_with(  # type: ignore
-        task_id, {"catchall": True}, [f"{uid}#bar"], uid, unittest.mock.ANY)
+        task_id, {"catchall": True}, [f"{uid}#bar"], uid, unittest.mock.ANY, hand_offs=unittest.mock.ANY)
     routing.route_series.push_serieslevel_outgoing.assert_called_once_with(  # type: ignore
-        task_id, {"catchall": True}, [f"{uid}#bar"], uid, unittest.mock.ANY, {})
+        task_id, {"catchall": True}, [f"{uid}#bar"], uid, unittest.mock.ANY, {}, hand_offs=unittest.mock.ANY)
 
     assert ["task.json", f"{uid}#bar.dcm", f"{uid}#bar.tags"] == [
         k.name for k in Path("/var/processing").glob("**/*") if k.is_file()
@@ -181,7 +184,9 @@ async def test_process_series_nomad(fs, mercure_config: Callable[[Dict], Config]
     # processor.run_processor()
 
     assert (Path("/var/success") / processor_path.name).exists(), f"{processor_path.name} missing from success dir"
-    assert files == [k.name for k in (Path("/var/success") / processor_path.name).glob("*") if k.is_file()]
+    # Directory entry order is not meaningful (and atomic rewrites give a file a new inode,
+    # moving it to the end of readdir order), so compare as sets.
+    assert set(files) == {k.name for k in (Path("/var/success") / processor_path.name).glob("*") if k.is_file()}
     with open(Path("/var/success") / processor_path.name / "task.json") as t:
         task = json.load(t)
     assert task == {
@@ -232,9 +237,11 @@ async def test_process_series_nomad(fs, mercure_config: Callable[[Dict], Config]
     await processor.run_processor()
 
     assert (Path("/var/error") / processor_path.name).exists()
-    assert ["task.json", "FAILEDFAILED#bar.dcm", "FAILEDFAILED#bar.tags"] == [
+    # Compare as sets: readdir order is not meaningful (an atomic rewrite moves the
+    # directory entry to the end of readdir order).
+    assert {"task.json", "FAILEDFAILED#bar.dcm", "FAILEDFAILED#bar.tags"} == {
         k.name for k in (Path("/var/error") / processor_path.name / "in").rglob("*") if k.is_file()
-    ]
+    }
     assert ["task.json"] == [
         k.name for k in (Path("/var/error") / processor_path.name / "out").rglob("*") if k.is_file()
     ]
@@ -310,20 +317,19 @@ async def test_process_series(fs, mercure_config: Callable[[Dict], Config], mock
     )
     print("FAKE RUN RESULT FILES", list((Path("/var/success")).glob("**/*")))
     assert [] == [k.name for k in Path("/var/processing").glob("**/*")]
-    assert files + ["result.json"] == [k.name for k in (Path("/var/success")).glob("**/*") if k.is_file()]
+    # Compare as sets: readdir order is not meaningful across filesystems.
+    assert set(files + ["result.json"]) == {k.name for k in Path("/var/success").glob("**/*") if k.is_file()}
 
     common.monitor.send_task_event.assert_has_calls(  # type: ignore
         [
             call(task_event.REGISTER, task_id, 1, "catchall", "Registered series"),
             call(task_event.DELEGATE, task_id, 1, new_task_id, "catchall"),
             call(task_event.MOVE, task_id, 1, f"/var/processing/{new_task_id}", "Moved files"),
+            call(task_event.PROCESS_BEGIN, new_task_id, 1, "test_module", "Processing job running"),
+            call(task_event.PROCESS_MODULE_BEGIN, new_task_id, 1, "test_module", "Processing module running"),
+            call(task_event.PROCESS_MODULE_COMPLETE, new_task_id, 1, "test_module", "Processing module complete"),
             call(task_event.PROCESS_COMPLETE, new_task_id, 1, "", "Processing job complete"),
             call(task_event.COMPLETE, new_task_id, 0, "", "Task complete"),
-        ]
-    )
-    common.monitor.async_send_task_event.assert_has_calls(  # type: ignore
-        [
-            call(task_event.PROCESS_BEGIN, new_task_id, 1, "test_module", "Processing job running"),
         ]
     )
 
@@ -414,7 +420,8 @@ async def test_multi_process_series(fs, mercure_config: Callable[[Dict], Config]
         )
 
     assert [] == [k.name for k in Path("/var/processing").glob("**/*")]
-    assert [*files, 'result.json'] == [k.name for k in (Path("/var/success") / processor_path.name).glob("*") if k.is_file()]
+    # Compare as sets: readdir order is not meaningful across filesystems.
+    assert {*files, 'result.json'} == {k.name for k in (Path("/var/success") / processor_path.name).glob("*") if k.is_file()}
 
     with open(Path("/var/success") / processor_path.name / "task.json") as t:
         task = json.load(t)
@@ -440,17 +447,13 @@ async def test_multi_process_series(fs, mercure_config: Callable[[Dict], Config]
             call(task_event.REGISTER, task_id, 1, "catchall", "Registered series"),
             call(task_event.DELEGATE, task_id, 1, new_task_id, "catchall"),
             call(task_event.MOVE, task_id, 1, f"/var/processing/{new_task_id}", "Moved files"),
-            call(task_event.PROCESS_COMPLETE, new_task_id, 1, "", "Processing job complete"),
-            call(task_event.COMPLETE, new_task_id, 0, "", "Task complete"),
-        ]
-    )
-    common.monitor.async_send_task_event.assert_has_calls(  # type: ignore
-        [
             call(task_event.PROCESS_BEGIN, new_task_id, 1, "test_module_1", "Processing job running"),
             call(task_event.PROCESS_MODULE_BEGIN, new_task_id, 1, "test_module_1", "Processing module running"),
             call(task_event.PROCESS_MODULE_COMPLETE, new_task_id, 1, "test_module_1", "Processing module complete"),
             call(task_event.PROCESS_MODULE_BEGIN, new_task_id, 1, "test_module_2", "Processing module running"),
             call(task_event.PROCESS_MODULE_COMPLETE, new_task_id, 1, "test_module_2", "Processing module complete"),
+            call(task_event.PROCESS_COMPLETE, new_task_id, 1, "", "Processing job complete"),
+            call(task_event.COMPLETE, new_task_id, 0, "", "Task complete"),
         ]
     )
     common.monitor.send_processor_output.assert_has_calls(  # type: ignore
@@ -459,6 +462,206 @@ async def test_multi_process_series(fs, mercure_config: Callable[[Dict], Config]
             for i, m in enumerate(partial["modules"])
         ]
     )
+
+
+@pytest.mark.asyncio
+async def test_processor_does_not_fallback_to_a_task_that_disappeared_during_prioritization(
+    fs, mercure_config: Callable[[Dict], Config], mocked: MockerFixture
+):
+    """A stale scan must not make a processor operate on another processor's task.
+
+    Guards against the regression where a ``FileNotFoundError`` raised while reading a
+    task file (because a competing processor already claimed it) fell back to
+    ``sorted_tasks[0]`` and processed the other processor's task.
+    """
+    # Load the test configuration, including /var/processing as the folder to scan.
+    # The mocked processing functions below mean this test does not exercise Docker itself.
+    mercure_config({"process_runner": "docker", **config_partial})
+    # Create a directory that the initial filesystem scan will report as ready.
+    task_folder = Path("/var/processing/disappeared-task")
+    task_folder.mkdir()
+    # A DICOM file makes is_ready_for_processing() include this folder in its snapshot.
+    (task_folder / "input.dcm").touch()
+
+    # Simulate the race: another processor removes/moves task.json after the scan,
+    # so priority evaluation sees a missing task file.
+    mocked.patch.object(processor, "prioritize_tasks", side_effect=FileNotFoundError("task.json"))
+    # Spy on backup_input_images() to detect whether the stale task is modified. It lives in
+    # process_series now, which is also where the claim is taken.
+    backup = mocked.patch.object(process.process_series, "backup_input_images")
+    # Spy on process_series() to detect whether the stale task is submitted for processing.
+    process_series_mock = mocked.patch.object(processor, "process_series", new=AsyncMock())
+
+    # Run the scan and let the mocked priority lookup raise the simulated race error.
+    result = await processor.search_folder(0)
+
+    # A disappeared/claimed task should cause this scan to stop without processing anything.
+    assert result is False
+    # The stale fallback must not back up files from the task selected by the old snapshot.
+    backup.assert_not_called()
+    # The stale fallback must not send the task to process_series().
+    process_series_mock.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_two_processors_racing_for_one_task_only_one_starts_processing(
+    fs, mercure_config: Callable[[Dict], Config], mocked: MockerFixture
+):
+    """Run two processor scans concurrently against one task folder.
+
+    This exercises the actual interleaving between two concurrent search_folder() calls.
+    """
+    # Configure the processing directory used by both concurrent scans.
+    mercure_config({"process_runner": "docker", **config_partial})
+    task_folder = Path("/var/processing/racing-task")
+    task_folder.mkdir()
+    # Make the folder eligible for both scans in the same way as production.
+    (task_folder / "input.dcm").touch()
+
+    # Both scans choose the same folder from their independently observed scan results.
+    mocked.patch.object(processor, "prioritize_tasks", return_value=task_folder)
+    # backup_input_images() is synchronous, so use thread events and run each processor
+    # loop in a separate thread. This reproduces the production relationship between two
+    # independent processor processes without replacing the synchronous function by an
+    # unawaited AsyncMock coroutine.
+    backup_started = threading.Event()
+    release_backup = threading.Event()
+    backup_calls = 0
+
+    def backup_one_task(folder):
+        nonlocal backup_calls
+        backup_calls += 1
+        backup_started.set()
+        assert release_backup.wait(timeout=5), "timed out waiting to release the winning processor"
+
+    # Let the real process_series() perform the atomic claim, then hold the winner inside
+    # backup while the second processor scans the same shared filesystem.
+    mocked.patch.object(process.process_series, "backup_input_images", side_effect=backup_one_task)
+    # The synthetic task has no task.json; suppress production error-folder movement so
+    # this test remains focused on the claim race.
+    mocked.patch.object(process.process_series, "move_results")
+
+    def run_one_processor():
+        return asyncio.run(processor.search_folder(0))
+
+    first = asyncio.create_task(asyncio.to_thread(run_one_processor))
+    assert await asyncio.to_thread(backup_started.wait, 5), "winning processor never reached backup"
+    try:
+        # The first thread now owns .processing. The second real search must observe that
+        # claim and finish without entering backup_input_images().
+        second_result = await asyncio.wait_for(asyncio.to_thread(run_one_processor), timeout=5)
+        assert second_result is False
+    finally:
+        release_backup.set()
+    await asyncio.wait_for(first, timeout=5)
+
+    # Exactly one processor acquired the claim and therefore exactly one entered backup.
+    assert backup_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_processor_claims_before_backing_up_input_images(
+    fs, mercure_config: Callable[[Dict], Config], mocked: MockerFixture
+):
+    """``search_folder`` must delegate ownership and backup to ``process_series``."""
+    # Load the test configuration, including /var/processing as the folder to scan.
+    mercure_config({"process_runner": "docker", **config_partial})
+    # Create a ready task containing a DICOM file.
+    task_folder = Path("/var/processing/unclaimed-task")
+    task_folder.mkdir()
+    (task_folder / "input.dcm").touch()
+
+    # Make priority selection deterministic: this is the task that search_folder() must claim.
+    mocked.patch.object(processor, "prioritize_tasks", return_value=task_folder)
+    # Observe the backup helper inside process_series(); the processor module no longer
+    # performs this mutation before handing the task to process_series().
+    backup = mocked.patch.object(process.process_series, "backup_input_images")
+    # Stop after delegation; ownership and backup ordering are tested by the race test above.
+    process_series_mock = mocked.patch.object(processor, "process_series", new=AsyncMock())
+
+    # Execute one processor scan, which should delegate the selected task.
+    await processor.search_folder(0)
+
+    # search_folder() should not call the backup helper itself.
+    backup.assert_not_called()
+    process_series_mock.assert_awaited_once_with(task_folder)
+
+
+@pytest.mark.asyncio
+async def test_processing_cleanup_does_not_touch_a_disappeared_task(
+    fs, mercure_config: Callable[[Dict], Config], mocked: MockerFixture
+):
+    """Cleanup must not process a folder that disappeared after ownership was lost.
+
+    Guards against the regression where ``process_series`` ran its ``finally`` cleanup
+    (result/error move plus ``shutil.rmtree``) even after failing to acquire the claim,
+    deleting or failing a folder that this process never owned.
+    """
+    # Configure process_series() to use its Docker/systemd cleanup branch; the task itself is absent.
+    # This lets the test expose the unconditional cleanup after lock-file creation fails.
+    mercure_config({"process_runner": "docker", **config_partial})
+    # Use a path representing a task deleted by the competing processor before cleanup.
+    task_folder = Path("/var/processing/disappeared-task")
+
+    # Observe result movement: a task that this process never owned must not be moved.
+    move_results = mocked.patch("process.process_series.move_results")
+    # Observe recursive deletion: cleanup must not remove a path owned by another processor.
+    remove_tree = mocked.patch("process.process_series.shutil.rmtree")
+
+    # Invoke the real process_series() entry point against the disappeared task path.
+    await process.process_series.process_series(task_folder)
+
+    # No result/error move is valid because this process never acquired the task.
+    move_results.assert_not_called()
+    # No cleanup is valid because the task folder is already absent/disappeared.
+    remove_tree.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("poison_is_oldest", ((True,), (False,)))
+async def test_unreadable_task_file_does_not_block_other_tasks(
+    fs, mercure_config: Callable[[Dict], Config], mocked: MockerFixture, poison_is_oldest: bool
+):
+    """One unparsable task file must not stall the whole processing folder.
+
+    Guards the head-of-line stall that ``prioritize_tasks`` creates when it reads every
+    candidate in a single pass: a ``task.json`` that fails to parse (truncated write,
+    schema drift, unreadable permissions) must be skipped so the remaining tasks are
+    still processed. Only a vanished task file means "someone else took it".
+    """
+    # Route a real task so the healthy candidate carries a genuine task.json whose
+    # applied_rule resolves against the configuration below.
+    config = mercure_config(
+        {"process_runner": "docker", **config_partial},
+    )
+    task_id = str(uuid.uuid1())
+    create_and_route(fs, mocked, task_id, config)
+
+    # The one legitimately processable task in the folder.
+    healthy_folder = next(Path("/var/processing").iterdir())
+
+    # A poisoned neighbour: present and ready, but its task file cannot be parsed.
+    poison_folder = Path("/var/processing/poison-task")
+    poison_folder.mkdir()
+    # A DICOM file makes is_ready_for_processing() report this folder as ready, so the
+    # scan really does hand it to prioritize_tasks().
+    (poison_folder / "input.dcm").touch()
+    (poison_folder / "task.json").write_text("{ this is not json")
+
+    # Candidates are ordered by modification time, so control which one is examined first.
+    old_timestamp = time.time() - 3600
+    os.utime(poison_folder if poison_is_oldest else healthy_folder, (old_timestamp, old_timestamp))
+
+    # Stand in for the claim + Docker run; this test is about candidate selection only.
+    process_series_mock = mocked.patch.object(processor, "process_series", new=AsyncMock())
+
+    # One scan over a folder holding one healthy and one unreadable task.
+    result = await processor.search_folder(0)
+
+    # The scan must report progress rather than giving up on the whole tick.
+    assert result is True
+    # The healthy task must be the one handed to process_series(); the poison is skipped.
+    process_series_mock.assert_awaited_once_with(healthy_folder)
 
 
 @pytest.mark.asyncio

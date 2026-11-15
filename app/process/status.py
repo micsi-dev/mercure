@@ -19,7 +19,10 @@ def is_ready_for_processing(folder) -> bool:
         has_dicom_files = len(list(path.rglob("*.dcm"))) > 0
         folder_status = (
             not (path / mercure_names.LOCK).exists()
+            # .processing: a processor is running the task. .completing: a processor is collecting
+            # the results of a finished Nomad job and is about to delete this folder.
             and not (path / mercure_names.PROCESSING).exists()
+            and not (path / mercure_names.COMPLETING).exists()
             and has_dicom_files
         )
         return folder_status

@@ -15,8 +15,14 @@ from pathlib import Path
 from typing import Callable, Optional, Tuple
 
 import common.influxdb
+import common.monitor as monitor
+import daiquiri
 import dateutil
 import graphyte
+
+# Not log_helpers.get_logger(): log_helpers imports this module and calls get_runner() while setting up,
+# and its handler reports warnings to the bookkeeper, which is the wrong place during shutdown.
+logger = daiquiri.getLogger("helper")
 
 # Global variable to broadcast when the process should terminate
 terminate = False
@@ -117,7 +123,7 @@ def _is_offpeak(offpeak_start: str, offpeak_end: str, current_time: _time) -> bo
         start_time = datetime.strptime(offpeak_start, "%H:%M").time()
         end_time = datetime.strptime(offpeak_end, "%H:%M").time()
     except Exception:
-        print(f"Unable to parse offpeak time: {offpeak_start}, {offpeak_end}", None)  # handle_error
+        logger.error(f"Unable to parse offpeak time: {offpeak_start}, {offpeak_end}")
         return True
 
     if start_time < end_time:
@@ -209,21 +215,72 @@ class RepeatedTimer(object):
             self.exit_function(*self.args, **self.kwargs)
 
 
+#: Shutdown deadlines, in seconds. Their sum stays inside the supervisors' stop timeout
+#: (TimeoutStopSec=120 in the unit files, stop_grace_period: 2m in docker-compose.yml).
+SHUTDOWN_TASK_TIMEOUT = 60.0
+SHUTDOWN_MONITOR_TIMEOUT = 10.0
+
+
+def drain_pending_tasks(loop: asyncio.AbstractEventLoop,
+                        monitor_timeout: float = SHUTDOWN_MONITOR_TIMEOUT,
+                        task_timeout: float = SHUTDOWN_TASK_TIMEOUT) -> None:
+    """Bounded shutdown for a service whose event loop has stopped.
+
+    Waits up to ``task_timeout`` for outstanding tasks and cancels the rest, then drains bookkeeper
+    reporting (last, so work finishing during shutdown can still report), then closes metrics - after the
+    loop, because the InfluxDB close blocks (for at most its max_close_wait).
+    """
+    if loop.is_running():
+        raise RuntimeError("drain_pending_tasks() must be called after the event loop has stopped")
+
+    # Snapshot the outstanding work *before* the drain starts. Collecting it from inside _drain() also
+    # picks up the drain's own wrapper: on Python < 3.12, asyncio.wait_for() runs _drain() in a separate
+    # task, so current_task() is not the task run_until_complete() is waiting on. The drain then waited
+    # for itself, timed out and cancelled itself (CancelledError).
+    remaining = {task for task in asyncio.all_tasks(loop)
+                 if not task.done() and task.get_name() != monitor.CONSUMER_TASK_NAME}
+
+    async def _drain() -> None:
+        if remaining:
+            _, pending = await asyncio.wait(remaining, timeout=task_timeout)
+            if pending:
+                logger.warning(f"Cancelling {len(pending)} task(s) that did not finish within {task_timeout}s")
+                for task in pending:
+                    task.cancel()
+                await asyncio.wait(pending, timeout=2)
+        await monitor.shutdown(monitor_timeout)
+
+    try:
+        # Backstop for the steps that are not strictly bounded (cancellation, closing the pools).
+        loop.run_until_complete(asyncio.wait_for(_drain(), task_timeout + monitor_timeout + 5))
+    except Exception as e:  # a shutdown that cannot drain must still exit
+        logger.error(f"Shutdown drain did not complete cleanly: {e}")
+
+
 class FileLock:
-    """Helper class that implements a file lock. The lock file will be removed also from the destructor so that
-    no spurious lock files remain if exceptions are raised."""
+    """A lock file that marks a folder as "being worked on".
+
+    The lock is released only by an explicit :meth:`free` (or by leaving a ``with`` block). There is
+    deliberately no destructor: a lock that disappears when the owning frame is garbage collected
+    unlocks half-written folders on any unexpected exception, which hands them to the next service.
+    Use it as a context manager. By default the lock is released when the block is left, also
+    on an exception. Pass ``keep_on_error=True`` for a lock that guards a folder being *filled*:
+    if the block raises, the lock stays so that a half-written folder is never handed over.
+    """
     lockCreated = False
 
-    def __init__(self, path_for_lockfile: Path):
+    def __init__(self, path_for_lockfile: Path, keep_on_error: bool = False):
         self.lockfile = path_for_lockfile
-        # TODO: Handle case if lock file cannot be created
+        self.keep_on_error = keep_on_error
         self.lockfile.touch(exist_ok=False)
         self.lockCreated = True
 
-    # Destructor to ensure that the lock file gets deleted
-    # if the calling function is left somewhere as result
-    # of an unhandled exception
-    def __del__(self) -> None:
+    def __enter__(self) -> "FileLock":
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        if exc_type is not None and self.keep_on_error:
+            return
         self.free()
 
     def free(self) -> None:

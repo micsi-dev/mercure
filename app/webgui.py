@@ -304,6 +304,9 @@ def startup(app: Starlette):
 async def shutdown() -> None:
     monitor.send_event(monitor.m_events.SHUTDOWN, monitor.severity.INFO, "")
     await delete_old_tests()
+    # Release the reporting queue and its connection pools within a deadline, so a bookkeeper that is
+    # not answering cannot hold the webinterface open past the supervisor's patience.
+    await monitor.shutdown(5.0)
 
 
 async def delete_old_tests() -> Response:
@@ -511,7 +514,7 @@ async def show_log(request) -> Response:
         "sub_services": sub_services,
         "subservice": request.query_params.get("subservice", None)
     }
-    return templates.TemplateResponse(template, context)
+    return templates.TemplateResponse(request, template, context)
 
 
 ###################################################################################
@@ -543,7 +546,7 @@ async def configuration(request) -> Response:
         "license_uploaded": request.query_params.get("license") == "1",
         "license_error": request.session.pop("license_error", None),
     }
-    return templates.TemplateResponse(template, context)
+    return templates.TemplateResponse(request, template, context)
 
 
 @router.post("/configuration/license")
@@ -599,7 +602,7 @@ async def configuration_edit(request) -> Response:
         "page": "homepage",
         "config_content": config_content,
     }
-    return templates.TemplateResponse(template, context)
+    return templates.TemplateResponse(request, template, context)
 
 
 @router.post("/configuration/edit")
@@ -680,7 +683,7 @@ async def login(request) -> Response:
 
         "appliance_name": config.mercure.get("appliance_name", "master"),
     }
-    return templates.TemplateResponse(template, context)
+    return templates.TemplateResponse(request, template, context)
 
 
 # @router.get("/old_tests", methods=["GET"])
@@ -875,7 +878,7 @@ async def login_post(request) -> Response:
 
             "appliance_name": config.mercure.get("appliance_name", "mercure Router"),
         }
-        return templates.TemplateResponse(template, context)
+        return templates.TemplateResponse(request, template, context)
 
 
 # @router.get("/logout")
@@ -921,7 +924,7 @@ async def settings_edit(request) -> Response:
         "own_settings": "True",
         "change_password": users.users_list[own_name].get("change_password", "False"),
     }
-    return templates.TemplateResponse(template, context)
+    return templates.TemplateResponse(request, template, context)
 
 
 @router.post("/settings")
@@ -1071,7 +1074,7 @@ async def homepage(request) -> Response:
         "service_status": service_status,
         "runtime": runtime,
     }
-    return templates.TemplateResponse(template, context)
+    return templates.TemplateResponse(request, template, context)
 
 
 @router.post("/services/control")
@@ -1157,7 +1160,7 @@ async def not_found(request, exc) -> Response:
     """
     template = "404.html"
     context = {"request": request, "mercure_version": mercure_defs.VERSION}
-    return templates.TemplateResponse(template, context, status_code=404)
+    return templates.TemplateResponse(request, template, context, status_code=404)
 
 
 async def server_error(request, exc) -> Response:
@@ -1167,7 +1170,7 @@ async def server_error(request, exc) -> Response:
     if request.method == "GET":
         template = "500.html"
         context = {"request": request, "mercure_version": mercure_defs.VERSION}
-        return templates.TemplateResponse(template, context, status_code=500)
+        return templates.TemplateResponse(request, template, context, status_code=500)
     else:
         return JSONResponse({"error": "Internal server error"}, status_code=500)
 exception_handlers = {
