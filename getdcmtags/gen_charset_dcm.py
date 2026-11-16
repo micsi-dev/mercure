@@ -27,7 +27,7 @@ def elem(group, elem, vr, value: bytes):
 
 def uid(seed: str, root: str = "1.2.826.0.1.3680043.9.7548") -> str:
     """Deterministic but unique-looking UID derived from seed."""
-    digest = hashlib.sha1(seed.encode()).hexdigest()
+    digest = hashlib.sha256(seed.encode()).hexdigest()  # not security: only derives test UIDs
     # fold hex into decimal digit groups, keep well under the 64 char limit
     parts = [str(int(digest[i:i + 6], 16)) for i in range(0, 18, 6)]
     return (root + "." + ".".join(parts))[:64]
